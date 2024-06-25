@@ -25,6 +25,7 @@ from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 @dataclass
 class MLPSubmodules:
+    pre_norm: Union[ModuleSpec, type] = None
     linear_fc1: Union[ModuleSpec, type] = None
     linear_fc2: Union[ModuleSpec, type] = None
 
@@ -63,19 +64,43 @@ class MLP(MegatronModule):
         ffn_hidden_size = self.config.ffn_hidden_size
         if self.config.gated_linear_unit:
             ffn_hidden_size *= 2
+            
+        if submodules.pre_norm != None:
+            self.pre_norm = build_module(
+                submodules.pre_norm,
+                hidden_size=self.config.hidden_size,
+                config=self.config
+            )
+        else:
+            self.pre_norm = None
 
-        self.linear_fc1 = build_module(
-            submodules.linear_fc1,
-            self.input_size,
-            ffn_hidden_size,
-            config=self.config,
-            init_method=self.config.init_method,
-            gather_output=False,
-            bias=self.config.add_bias_linear,
-            skip_bias_add=True,
-            is_expert=is_expert,
-            tp_comm_buffer_name='fc1',
-        )
+        if config.finetune and config.finetune_method == "lora":
+            self.linear_fc1 = build_module(
+                submodules.linear_fc1,
+                self.input_size,
+                ffn_hidden_size,
+                config=self.config,
+                init_method=self.config.init_method,
+                gather_output=False,
+                bias=self.config.add_bias_linear,
+                skip_bias_add=True,
+                is_expert=is_expert,
+                tp_comm_buffer_name='fc1',
+                is_mlp=True,
+            )
+        else:
+            self.linear_fc1 = build_module(
+                submodules.linear_fc1,
+                self.input_size,
+                ffn_hidden_size,
+                config=self.config,
+                init_method=self.config.init_method,
+                gather_output=False,
+                bias=self.config.add_bias_linear,
+                skip_bias_add=True,
+                is_expert=is_expert,
+                tp_comm_buffer_name='fc1',
+            )
 
         self.activation_func = self.config.activation_func
 
@@ -91,11 +116,16 @@ class MLP(MegatronModule):
             is_expert=is_expert,
             tp_comm_buffer_name='fc2',
         )
+        print("fc1: ",submodules.linear_fc1,"\nfc2: ",submodules.linear_fc2)
 
     def forward(self, hidden_states):
 
         # [s, b, 4 * h/p]
-        intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
+        if self.pre_norm is not None:
+            norm_hidden_states = self.pre_norm(hidden_states)
+            intermediate_parallel, bias_parallel = self.linear_fc1(norm_hidden_states)
+        else:
+            intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
 
         if self.config.bias_activation_fusion:
             if self.activation_func == F.gelu:

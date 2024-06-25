@@ -279,6 +279,20 @@ class TransformerConfig(ModelParallelConfig):
 
     enable_cuda_graph: bool = False
     """When set to true, TransformerLayer blocks are wrapped with CUDA graph."""
+    
+    finetune: bool = None
+    
+    finetune_method: str = None
+    
+    finetune_lora_rank: int = 8
+    
+    finetune_lora_alpha: float = 16
+    
+    finetune_lora_dropout: float = 0.05
+    
+    finetune_lora_quantize_base: bool = False
+    
+    finetune_mlp: bool = False
 
     def __post_init__(self):
         """ Python dataclass method that is used to modify attributes after initialization.

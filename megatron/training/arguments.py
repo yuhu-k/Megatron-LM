@@ -150,7 +150,8 @@ def validate_args(args, defaults={}):
 
     # Load saved args from Retro (if applicable).
     load_retro_args(args)
-
+    
+    print("sdfds",args.seq_length)
     # Tensor model parallel size.
     args.tensor_model_parallel_size = min(
         args.tensor_model_parallel_size, args.world_size)
@@ -392,9 +393,10 @@ def validate_args(args, defaults={}):
         args.encoder_seq_length = args.seq_length
     else:
         assert args.encoder_seq_length is not None
-        args.seq_length = args.encoder_seq_length
+        #args.seq_length = args.encoder_seq_length
 
     if args.seq_length is not None:
+        print(args.seq_length)
         assert args.max_position_embeddings >= args.seq_length
     if args.decoder_seq_length is not None:
         assert args.max_position_embeddings >= args.decoder_seq_length
@@ -597,6 +599,12 @@ def core_transformer_config_from_args(args, config_class=None):
     kw_args['batch_p2p_comm'] = not args.overlap_p2p_comm
     kw_args['num_moe_experts'] = args.num_experts
     kw_args['rotary_interleaved'] = args.rotary_interleaved
+    kw_args['finetune_method'] = args.finetune_method
+    kw_args['finetune_lora_rank'] = args.finetune_lora_rank
+    kw_args['finetune_lora_alpha'] = args.finetune_lora_alpha
+    kw_args['finetune_lora_dropout'] = args.finetune_lora_dropout
+    kw_args['finetune_lora_quantize_base'] = args.finetune_lora_quantize_base
+    kw_args['finetune_mlp'] = args.finetune_mlp
     if args.swiglu:
         kw_args['activation_func'] = F.silu
         kw_args['gated_linear_unit'] = True
@@ -1153,6 +1161,26 @@ def _add_training_args(parser):
     group.add_argument('--disable-tp-comm-split-rs', action='store_false',
                        help='Disables the Reduce-Scatter overlap with fprop GEMM.',
                        dest='tp_comm_split_rs')
+    
+    # self-defined for llama finetune
+    group.add_argument('--finetune-method',choices=["lora", "all"],
+                        help="Choose the fine-tuning method: 'lora' or 'all'",
+                        dest='finetune_method')
+    group.add_argument('--finetune-lora-rank',type=int, default=8,
+                        help="Set the fine-tuning lora rank",
+                        dest='finetune_lora_rank')
+    group.add_argument('--finetune-lora-alpha', type=float, default=16,
+                        help="Set the fine-tuning lora alpha",
+                        dest='finetune_lora_alpha')
+    group.add_argument('--finetune-lora-dropout', type=float, default=0.05,
+                        help="Set the fine-tuning lora dropout",
+                        dest='finetune_lora_dropout')
+    group.add_argument('--finetune-lora-quantize-base', action='store_false',
+                        help="Enable the fine-tuning lora quantization",
+                        dest='finetune_lora_quantize_base')
+    group.add_argument('--finetune-mlp', action='store_false',
+                        help="Enable the fine-tuning mlp",
+                        dest='finetune_mlp')
 
     return parser
 
@@ -1289,6 +1317,8 @@ def _add_checkpointing_args(parser):
                        help='If the model and optimizer state dict structure is'
                             'constant throughout a *single training job*, it allows for'
                             'different checkpointing performance optimizations.')
+    group.add_argument('--llama-size', type=str, default=None,
+                        help="Set model size")
     return parser
 
 

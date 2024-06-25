@@ -10,7 +10,7 @@ from megatron.training import print_rank_0
 from megatron.core import mpu
 from megatron.training.checkpointing import load_checkpoint
 from megatron.training.initialize import initialize_megatron
-from megatron.core.models.gpt import GPTModel
+from megatron.core.models.llama import LLaMAModel
 from megatron.training import get_model
 from megatron.training.arguments import core_transformer_config_from_args
 from megatron.training.yaml_arguments import core_transformer_config_from_yaml
@@ -18,9 +18,8 @@ from megatron.inference.text_generation_server import MegatronServer
 from megatron.inference.text_generation import generate_and_post_process
 from megatron.inference.text_generation import beam_search_and_post_process
 from megatron.core.transformer.spec_utils import import_module
-from megatron.core.models.gpt.gpt_layer_specs import (
-    get_gpt_layer_local_spec,
-    get_gpt_layer_with_transformer_engine_spec,
+from megatron.core.models.llama.llama_layer_specs import (
+    get_llama_layer_with_transformer_engine_spec,
 )
 
 import torch
@@ -28,7 +27,7 @@ from typing import Union
 import megatron
 
 
-def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megatron.legacy.model.GPTModel]:
+def model_provider(pre_process=True, post_process=True) -> Union[LLaMAModel, megatron.legacy.model.GPTModel]:
     """Builds the model.
 
         If you set the use_legacy_models to True, it will return the legacy GPT model and if not the core GPT model.
@@ -66,11 +65,8 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
             transformer_layer_spec = import_module(args.spec)
         else:
             if use_te:
-                transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm)
-            else:
-                transformer_layer_spec = get_gpt_layer_local_spec(args.num_experts, args.moe_grouped_gemm)
-
-        model = GPTModel(
+                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm)
+        model = LLaMAModel(
             config=config,
             transformer_layer_spec=transformer_layer_spec,
             vocab_size=args.padded_vocab_size,

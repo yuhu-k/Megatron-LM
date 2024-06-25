@@ -32,6 +32,7 @@ from .transformer_config import TransformerConfig
 @dataclass
 class SelfAttentionSubmodules:
     linear_qkv: Union[ModuleSpec, type] = None
+    qkv_layernorm: Union[ModuleSpec, type] = None
     core_attention: Union[ModuleSpec, type] = None
     linear_proj: Union[ModuleSpec, type] = None
     q_layernorm: Union[ModuleSpec, type] = None
@@ -81,6 +82,8 @@ class Attention(MegatronModule, ABC):
         self.num_attention_heads_per_partition = divide(self.config.num_attention_heads, world_size)
         self.num_query_groups_per_partition = divide(self.config.num_query_groups, world_size)
 
+        print("core_attention",submodules.core_attention)
+        print("linear_proj",submodules.linear_proj)
         self.core_attention = build_module(
             submodules.core_attention,
             config=self.config,
@@ -358,6 +361,16 @@ class SelfAttention(Attention):
             attn_mask_type=attn_mask_type,
             attention_type="self",
         )
+        print("linear_qkv: ",submodules.linear_qkv)
+        
+        if submodules.qkv_layernorm is not None:
+            self.qkv_layernorm = build_module(
+                submodules.qkv_layernorm,
+                hidden_size=self.config.hidden_size,
+                config=self.config
+            )
+        else:
+            self.qkv_layernorm = None
 
         self.linear_qkv = build_module(
             submodules.linear_qkv,
@@ -373,6 +386,7 @@ class SelfAttention(Attention):
         )
 
         if submodules.q_layernorm is not None:
+            print("q_norm: ",submodules.q_layernorm)
             self.q_layernorm = build_module(
                 submodules.q_layernorm,
                 hidden_size=self.hidden_size_per_attention_head,
@@ -383,6 +397,7 @@ class SelfAttention(Attention):
             self.q_layernorm = None
 
         if submodules.k_layernorm is not None:
+            print("k_norm: ",submodules.k_layernorm)
             self.k_layernorm = build_module(
                 submodules.k_layernorm,
                 hidden_size=self.hidden_size_per_attention_head,
@@ -391,6 +406,13 @@ class SelfAttention(Attention):
             )
         else:
             self.k_layernorm = None
+        
+        
+        if config.finetune == "lora":
+            for param in self.linear_qkv.parameters():
+                param.requires_grad = False
+            for param in self.qkv_layernorm.parameters():
+                param.requires_grad = False
 
     def run_realtime_tests(self):
         """Performs a consistency check.
@@ -466,7 +488,11 @@ class SelfAttention(Attention):
         Derives `query`, `key` and `value` tensors from `hidden_states`.
         """
         # Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)]
-        mixed_qkv, _ = self.linear_qkv(hidden_states)
+        if self.qkv_layernorm is not None:
+            norm_hidden_states = self.qkv_layernorm(hidden_states)
+            mixed_qkv, _ = self.linear_qkv(norm_hidden_states)
+        else:
+            mixed_qkv, _ = self.linear_qkv(hidden_states)
 
         # [sq, b, hp] --> [sq, b, ng, (np/ng + 2) * hn]
         new_tensor_shape = mixed_qkv.size()[:-1] + (
