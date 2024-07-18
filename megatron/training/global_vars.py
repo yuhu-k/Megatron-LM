@@ -10,6 +10,7 @@ from megatron.training import dist_signal_handler
 from megatron.core import Timers
 from megatron.training.tokenizer import build_tokenizer
 from .microbatches import build_num_microbatches_calculator
+from megatron.training.self_define_timer import ExecutionTimer as self_defined_timer
 
 _GLOBAL_ARGS = None
 _GLOBAL_NUM_MICROBATCHES_CALCULATOR = None
@@ -20,6 +21,10 @@ _GLOBAL_ONE_LOGGER = None
 _GLOBAL_ADLR_AUTORESUME = None
 _GLOBAL_TIMERS = None
 _GLOBAL_SIGNAL_HANDLER = None
+_GLOBAL_SELF_DEFINED_TIMER = None
+
+def get_self_define_timer():
+    return _GLOBAL_SELF_DEFINED_TIMER
 
 def get_args():
     """Return arguments."""
@@ -106,7 +111,13 @@ def set_global_variables(args, build_tokenizer=True):
 
     if args.exit_signal_handler:
         _set_signal_handler()
+        
+    if args.profile:
+        _set_self_defined_timer()
 
+def _set_self_defined_timer():
+    global _GLOBAL_SELF_DEFINED_TIMER
+    _GLOBAL_SELF_DEFINED_TIMER = self_defined_timer()
 
 def set_args(args):
     global _GLOBAL_ARGS

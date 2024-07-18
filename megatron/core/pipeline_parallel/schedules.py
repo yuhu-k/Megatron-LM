@@ -5,6 +5,7 @@ from typing import Callable, Iterator, List, Optional, Union
 
 import torch
 from torch.autograd.variable import Variable
+import torch.distributed
 
 from megatron.core import parallel_state
 from megatron.core.enums import ModelType
@@ -126,7 +127,6 @@ def custom_backward(output, grad_output):
     torch.autograd.backward. Pytorch's 'backward' checks that the output and
     grad have the same shape, while C++'s 'backward' does not.
     '''
-
     assert output.numel() == 1, "output should be pseudo-'freed' in schedule, to optimize memory"
     assert isinstance(output, torch.Tensor), "output == '%s'." % type(output).__name__
     assert isinstance(grad_output, (torch.Tensor, type(None))), (
@@ -183,6 +183,11 @@ def forward_step(
     Returns output tensor."""
     if config.timers is not None:
         config.timers('forward-compute', log_level=2).start()
+    if config.profile:
+        torch.cuda.nvtx.range_push("forward")
+        from megatron.training.global_vars import get_self_define_timer
+        timer = get_self_define_timer()
+        timer.push("forward")
 
     if is_first_microbatch and hasattr(model, 'set_is_first_microbatch'):
         model.set_is_first_microbatch()
@@ -230,11 +235,17 @@ def forward_step(
 
     if config.timers is not None:
         config.timers('forward-compute').stop()
+    if config.profile:
+        torch.cuda.nvtx.range_pop()
+        timer.pop()
 
     # Set the loss scale for the auxiliary loss of the MoE layer.
     # Since we use a trick to do backward on the auxiliary loss, we need to set the scale explicitly.
     if hasattr(config, 'num_moe_experts') and config.num_moe_experts is not None:
         # Calculate the loss scale based on the grad_scale_func if available, else default to 1.
+        if config.profile:
+            torch.cuda.nvtx.range_push("num_moe_experts")
+            timer.push("num_moe_experts")
         loss_scale = (
             config.grad_scale_func(torch.ones(1, device=output_tensor.device))
             if config.grad_scale_func is not None
@@ -242,6 +253,9 @@ def forward_step(
         )
         # Set the loss scale
         MoEAuxLossAutoScaler.set_loss_scale(loss_scale / num_microbatches)
+        if config.profile:
+            torch.cuda.nvtx.range_pop()
+            timer.pop()
 
     # If T5 model (or other model with encoder and decoder)
     # and in decoder stack, then send encoder_hidden_state
@@ -273,7 +287,11 @@ def backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, c
 
     if config.timers is not None:
         config.timers('backward-compute', log_level=2).start()
-
+    if config.profile:
+        torch.cuda.nvtx.range_push("backward")
+        from megatron.training.global_vars import get_self_define_timer
+        timer = get_self_define_timer()
+        timer.push("backward")
     # Retain the grad on the input_tensor.
     unwrap_input_tensor_grad = False
     if not isinstance(input_tensor, list):
@@ -292,10 +310,11 @@ def backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, c
     if output_tensor_grad[0] is None and config.grad_scale_func is not None:
         output_tensor[0] = config.grad_scale_func(output_tensor[0])
 
-    if config.deallocate_pipeline_outputs:
-        custom_backward(output_tensor[0], output_tensor_grad[0])
-    else:
-        torch.autograd.backward(output_tensor[0], grad_tensors=output_tensor_grad[0])
+    if output_tensor[0].requires_grad == True:
+        if config.deallocate_pipeline_outputs:
+            custom_backward(output_tensor[0], output_tensor_grad[0])
+        else:
+            torch.autograd.backward(output_tensor[0], grad_tensors=output_tensor_grad[0])
 
     # Collect the grad of the input_tensor.
     input_tensor_grad = [None]
@@ -322,6 +341,9 @@ def backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, c
     if config.timers is not None:
         config.timers('backward-compute').stop()
 
+    if config.profile:
+        torch.cuda.nvtx.range_pop()
+        timer.pop()
     return input_tensor_grad
 
 
@@ -1293,8 +1315,16 @@ def forward_backward_pipelining_without_interleaving(
     # If all microbatches are run in warmup / cooldown phase, then no need to
     # receive this tensor here.
     if num_microbatches_remaining > 0:
+        if config.profile:
+            torch.cuda.nvtx.range_push("recv forward")
+            from megatron.training.global_vars import get_self_define_timer
+            timer = get_self_define_timer()
+            timer.push("recv forward")
         input_tensor = recv_forward(recv_tensor_shapes, config)
-
+        if config.profile:
+            torch.cuda.nvtx.range_pop()
+            timer.pop()
+    num_token_list = []
     # Run 1F1B in steady state.
     for i in range(num_microbatches_remaining):
         last_iteration = i == (num_microbatches_remaining - 1)
@@ -1322,7 +1352,16 @@ def forward_backward_pipelining_without_interleaving(
             ),
             current_microbatch=i + num_warmup_microbatches,
         )
-        total_num_tokens += num_tokens.item()
+        if config.calculate_per_token_loss:
+            if config.profile:
+                torch.cuda.nvtx.range_push("total_num_tokens")
+                from megatron.training.global_vars import get_self_define_timer
+                timer = get_self_define_timer()
+                timer.push("total_num_tokens")
+            total_num_tokens += num_tokens.item()
+            if config.profile:
+                    torch.cuda.nvtx.range_pop()
+                    timer.pop()
 
         if forward_only:
             send_forward(output_tensor, send_tensor_shapes, config)
@@ -1331,9 +1370,19 @@ def forward_backward_pipelining_without_interleaving(
                 input_tensor = recv_forward(recv_tensor_shapes, config)
 
         else:
+            if config.profile:
+                torch.cuda.nvtx.range_push("send_forward_recv_backward")
+                from megatron.training.global_vars import get_self_define_timer
+                timer = get_self_define_timer()
+                timer.push("send_forward_recv_backward")
+            # l = [torch.randn(256,1,1024).to(f"cuda:{torch.distributed.get_rank()}")]
+            # a = send_forward_recv_backward(
+            #     l, l[0].size(), config
+            # )
             output_tensor_grad = send_forward_recv_backward(
                 output_tensor, send_tensor_shapes, config
             )
+            # output_tensor_grad = torch.randn(1024,1,5120,dtype=torch.float16).to(f"cuda:{torch.distributed.get_rank()}")
 
             # Add input_tensor and output_tensor to end of list.
             input_tensors.append(input_tensor)
@@ -1351,6 +1400,9 @@ def forward_backward_pipelining_without_interleaving(
                 if config.grad_sync_func is None or rank == 0:
                     enable_grad_sync()
 
+            if config.profile:
+                torch.cuda.nvtx.range_pop()
+                timer.pop()
             input_tensor_grad = backward_step(
                 input_tensor, output_tensor, output_tensor_grad, model_type, config
             )
@@ -1359,9 +1411,22 @@ def forward_backward_pipelining_without_interleaving(
                 input_tensor = None
                 send_backward(input_tensor_grad, recv_tensor_shapes, config)
             else:
+                if config.profile:
+                    torch.cuda.nvtx.range_push("send_backward_recv_forward")
+                    from megatron.training.global_vars import get_self_define_timer
+                    timer = get_self_define_timer()
+                    timer.push("send_backward_recv_forward")
+                # l = [torch.randn(256,1,1024).to(f"cuda:{torch.distributed.get_rank()}")]
+                # a = send_backward_recv_forward(
+                #     l, l[0].size(), config
+                # )
                 input_tensor = send_backward_recv_forward(
                     input_tensor_grad, recv_tensor_shapes, config
                 )
+                # input_tensor = torch.randn(recv_tensor_shapes,dtype=torch.float16).to(f"cuda:{torch.distributed.get_rank()}")
+                if config.profile:
+                    torch.cuda.nvtx.range_pop()
+                    timer.pop()
 
     # Run cooldown backward passes.
     if not forward_only:

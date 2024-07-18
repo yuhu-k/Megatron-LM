@@ -517,6 +517,7 @@ class GPTDataset(MegatronDataset):
         Returns:
             int: The number of tokens in a single epoch
         """
+        print(self.indices,self.dataset.sequence_lengths)
         return int(numpy.sum(self.dataset.sequence_lengths[self.indices]))
 
     def _get_num_epochs(self, num_tokens_per_epoch: int) -> int:
@@ -536,6 +537,7 @@ class GPTDataset(MegatronDataset):
             num_tokens_requested = (
                 self.num_samples * self.config.sequence_length
             ) + self.config.add_extra_token_to_sequence
+            print(num_tokens,num_tokens_requested,num_tokens_per_epoch)
             while num_tokens < num_tokens_requested:
                 num_epochs += 1
                 num_tokens += num_tokens_per_epoch

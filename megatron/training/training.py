@@ -17,6 +17,7 @@ import time
 # The earliest we can measure the start time.
 _TRAIN_START_TIME = time.time()
 import torch
+from tqdm import tqdm
 
 from megatron.core import mpu, tensor_parallel
 from megatron.core.utils import check_param_hashes_across_dp_replicas, get_model_config, StragglerDetector
@@ -55,7 +56,8 @@ from .global_vars import (
     get_one_logger,
     get_current_global_batch_size,
     get_num_microbatches,
-    update_num_microbatches)
+    update_num_microbatches,
+    get_self_define_timer)
 
 
 stimer = StragglerDetector()
@@ -567,7 +569,15 @@ def train_step(forward_step_func, data_iterator,
 
     # Update parameters.
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
+    if config.profile:
+        torch.cuda.nvtx.range_push("opt update")
+        from megatron.training.global_vars import get_self_define_timer
+        timer = get_self_define_timer()
+        timer.push("opt update")
     update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+    if config.profile:
+        torch.cuda.nvtx.range_pop()
+        timer.pop()
     timers('optimizer').stop()
 
     # Vision momentum.
@@ -1000,13 +1010,20 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                 'train_iterations_time_msecs_avg': train_iterations_time_msecs_avg,
                 'validation_iterations_time_msecs_avg': validation_iterations_time_msecs_avg
             })
-
+    if torch.distributed.get_rank() == 0:
+        progress_bar = tqdm(total=args.train_iters, desc='finetuning...', unit='iteration')
+    if args.profile:
+        self_timer = get_self_define_timer()
+        self_timer.rank.append(torch.distributed.get_rank())
     while iteration < args.train_iters:
+        if torch.distributed.get_rank() == 0:
+            progress_bar.update(1)
         if args.profile and \
            iteration == args.profile_step_start and \
            torch.distributed.get_rank() in args.profile_ranks:
             torch.cuda.cudart().cudaProfilerStart()
             torch.autograd.profiler.emit_nvtx(record_shapes=True).__enter__()
+            self_timer.start()
 
         maybe_finalize_async_save(False)
 
@@ -1168,12 +1185,13 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         if args.profile and \
            iteration == args.profile_step_end and \
            torch.distributed.get_rank() in args.profile_ranks:
+            self_timer.end(args.profile_output)
             torch.cuda.cudart().cudaProfilerStop()
 
         if args.manual_gc:
             if args.manual_gc_interval != 0 and iteration % args.manual_gc_interval == 0:
                 gc.collect()
-
+    progress_bar.close()
     track_e2e_metrics()
 
     # Flush TensorBoard and WandB writers.

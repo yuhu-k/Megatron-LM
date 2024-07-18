@@ -81,7 +81,7 @@ class LLaMAModel(LanguageModule):
                 max_sequence_length=self.max_sequence_length,
                 position_embedding_type=position_embedding_type,
             )
-
+            
         if self.position_embedding_type == 'rope':
             self.rotary_pos_emb = RotaryEmbedding(
                 kv_channels=self.config.kv_channels,
@@ -128,9 +128,19 @@ class LLaMAModel(LanguageModule):
                 embedding_activation_buffer=self.embedding_activation_buffer,
                 grad_output_buffer=self.grad_output_buffer,
             )
+            for param in self.output_layer.parameters():
+                param.requires_grad = False
+
+        else:
+            self.output_layer = None
 
         if self.pre_process or self.post_process:
-            self.setup_embeddings_and_output_layer()
+            self.setup_embeddings_and_output_layer()       
+        
+        if config.finetune_method == "lora":
+            for name, param in self.named_parameters():
+                if 'lora' not in name:
+                    param.requires_grad = False 
 
     def set_input_tensor(self, input_tensor: Tensor) -> None:
         """Sets input tensor to the model.
@@ -172,19 +182,28 @@ class LLaMAModel(LanguageModule):
         if decoder_input is not None:
             pass
         elif self.pre_process:
+            if self.config.profile:
+                torch.cuda.nvtx.range_push("embedding")
             decoder_input = self.embedding(input_ids=input_ids, position_ids=position_ids)
+            if self.config.profile:
+                torch.cuda.nvtx.range_pop()
         else:
             # intermediate stage of pipeline
             # decoder will get hidden_states from encoder.input_tensor
             decoder_input = None
 
         # Rotary positional embeddings (embedding is None for PP intermediate devices)
+        if self.config.profile:
+            torch.cuda.nvtx.range_push("rope")
+
         rotary_pos_emb = None
         if self.position_embedding_type == 'rope':
             rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
                 inference_params, self.decoder, decoder_input, self.config
             )
             rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
+        if self.config.profile:
+            torch.cuda.nvtx.range_pop()
 
         # Run decoder.
         hidden_states = self.decoder(
@@ -195,7 +214,7 @@ class LLaMAModel(LanguageModule):
             packed_seq_params=packed_seq_params,
             **(extra_block_kwargs or {}),
         )
-
+        
         if not self.post_process:
             return hidden_states
 
@@ -203,7 +222,18 @@ class LLaMAModel(LanguageModule):
         output_weight = None
         if self.share_embeddings_and_output_weights:
             output_weight = self.shared_embedding_or_output_weight()
+        if self.config.profile:
+            torch.cuda.nvtx.range_push("output layer")
         logits, _ = self.output_layer(hidden_states, weight=output_weight)
+        if self.config.profile:
+            torch.cuda.nvtx.range_pop()
+        
+        if self.embedding_activation_buffer != None:
+            for embedding_activation in self.embedding_activation_buffer:
+                print(embedding_activation.size())
+        if self.grad_output_buffer is not None:
+            for grad_output in self.grad_output_buffer:
+                print(grad_output.size())
 
         if labels is None:
             # [s b h] => [b s h]

@@ -56,7 +56,7 @@ class LanguageModelEmbedding(MegatronModule):
         # Position embedding (serial).
         if self.add_position_embedding:
             self.position_embeddings = torch.nn.Embedding(
-                self.max_sequence_length, self.config.hidden_size
+                self.max_sequence_length, self.config.hidden_size, padding_idx=-1
             )
 
             # Initialize the position embeddings.
@@ -65,7 +65,7 @@ class LanguageModelEmbedding(MegatronModule):
 
         if self.num_tokentypes > 0:
             self.tokentype_embeddings = torch.nn.Embedding(
-                self.num_tokentypes, self.config.hidden_size
+                self.num_tokentypes, self.config.hidden_size, padding_idx=-1
             )
             # Initialize the token-type embeddings.
             if self.config.perform_initialization:
@@ -97,7 +97,21 @@ class LanguageModelEmbedding(MegatronModule):
         Returns:
             Tensor: The output embeddings
         """
+        #print(f"input_ids size: {input_ids.size()}, values: {input_ids}")
+        #print(f"position_ids size: {position_ids.size()}, values: {position_ids}")
+        if tokentype_ids is not None:
+            print(f"tokentype_ids size: {tokentype_ids.size()}, values: {tokentype_ids}")
+
+        # assert input_ids.max().item() < self.vocab_size, "input_ids out of range"
+        # assert position_ids.max().item() < self.max_sequence_length, "position_ids out of range"
+        # if tokentype_ids is not None:
+        #     assert self.tokentype_embeddings is not None
+        #     assert tokentype_ids.max().item() < self.num_tokentypes, "tokentype_ids out of range"
+        if self.config.profile:
+            torch.cuda.nvtx.range_push("word_embeddings")
         word_embeddings = self.word_embeddings(input_ids)
+        if self.config.profile:
+            torch.cuda.nvtx.range_pop()
         if self.add_position_embedding:
             position_embeddings = self.position_embeddings(position_ids)
             embeddings = word_embeddings + position_embeddings

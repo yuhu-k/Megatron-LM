@@ -86,7 +86,20 @@ class MLP(MegatronModule):
                 skip_bias_add=True,
                 is_expert=is_expert,
                 tp_comm_buffer_name='fc1',
-                is_mlp=True,
+                mlp_layer_num=1,
+            )
+            self.linear_fc2 = build_module(
+                submodules.linear_fc2,
+                self.config.ffn_hidden_size,
+                self.config.hidden_size,
+                config=self.config,
+                init_method=self.config.output_layer_init_method,
+                bias=self.config.add_bias_linear,
+                input_is_parallel=True,
+                skip_bias_add=True,
+                is_expert=is_expert,
+                tp_comm_buffer_name='fc2',
+                mlp_layer_num=2,
             )
         else:
             self.linear_fc1 = build_module(
@@ -101,25 +114,29 @@ class MLP(MegatronModule):
                 is_expert=is_expert,
                 tp_comm_buffer_name='fc1',
             )
+            self.linear_fc2 = build_module(
+                submodules.linear_fc2,
+                self.config.ffn_hidden_size,
+                self.config.hidden_size,
+                config=self.config,
+                init_method=self.config.output_layer_init_method,
+                bias=self.config.add_bias_linear,
+                input_is_parallel=True,
+                skip_bias_add=True,
+                is_expert=is_expert,
+                tp_comm_buffer_name='fc2',
+            )
 
         self.activation_func = self.config.activation_func
 
-        self.linear_fc2 = build_module(
-            submodules.linear_fc2,
-            self.config.ffn_hidden_size,
-            self.config.hidden_size,
-            config=self.config,
-            init_method=self.config.output_layer_init_method,
-            bias=self.config.add_bias_linear,
-            input_is_parallel=True,
-            skip_bias_add=True,
-            is_expert=is_expert,
-            tp_comm_buffer_name='fc2',
-        )
-        print("fc1: ",submodules.linear_fc1,"\nfc2: ",submodules.linear_fc2)
-
     def forward(self, hidden_states):
-
+        
+        if self.config.profile:
+            torch.cuda.nvtx.range_push("mlp")
+            from megatron.training.global_vars import get_self_define_timer
+            timer = get_self_define_timer()
+            timer.push("mlp")
+        
         # [s, b, 4 * h/p]
         if self.pre_norm is not None:
             norm_hidden_states = self.pre_norm(hidden_states)
@@ -158,6 +175,9 @@ class MLP(MegatronModule):
         # [s, b, h]
         output, output_bias = self.linear_fc2(intermediate_parallel)
 
+        if self.config.profile:
+            torch.cuda.nvtx.range_pop()
+            timer.pop()
         return output, output_bias
 
     def sharded_state_dict(

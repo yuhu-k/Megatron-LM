@@ -183,6 +183,8 @@ class TransformerBlock(MegatronModule):
                 hidden_size=self.config.hidden_size,
                 eps=self.config.layernorm_epsilon,
             )
+            for param in self.final_layernorm.parameters():
+                param.requires_grad = False
 
     def _get_layer(self, layer_number: int):
         return self.layers[layer_number]

@@ -482,6 +482,8 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
             layer_number=layer_number,
             **extra_kwargs,
         )
+        for param in self.parameters():
+            param.requires_grad = False
 
     def forward(
         self,
@@ -492,6 +494,7 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
         attn_mask_type: AttnMaskType,
         packed_seq_params: PackedSeqParams = None,
     ):
+        
         packed_seq_kwargs = (
             dataclasses.asdict(packed_seq_params) if packed_seq_params is not None else {}
         )

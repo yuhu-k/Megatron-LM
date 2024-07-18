@@ -293,6 +293,8 @@ class TransformerConfig(ModelParallelConfig):
     finetune_lora_quantize_base: bool = False
     
     finetune_mlp: bool = False
+    
+    profile: bool = False
 
     def __post_init__(self):
         """ Python dataclass method that is used to modify attributes after initialization.

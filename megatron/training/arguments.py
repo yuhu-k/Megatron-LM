@@ -605,6 +605,7 @@ def core_transformer_config_from_args(args, config_class=None):
     kw_args['finetune_lora_dropout'] = args.finetune_lora_dropout
     kw_args['finetune_lora_quantize_base'] = args.finetune_lora_quantize_base
     kw_args['finetune_mlp'] = args.finetune_mlp
+    kw_args['profile'] = args.profile
     if args.swiglu:
         kw_args['activation_func'] = F.silu
         kw_args['gated_linear_unit'] = True
@@ -1020,6 +1021,8 @@ def _add_training_args(parser):
                        help='Global step to stop profiling.')
     group.add_argument('--profile-ranks', nargs='+', type=int, default=[0],
                        help='Global ranks to profile.')
+    group.add_argument('--profile-output', type=str, default=None,
+                       help='Location to save profiling result.')
     group.add_argument('--tp-comm-overlap', action='store_true', help='Enables the '
                        ' overlap of Tensor parallel communication and GEMM kernels.')
     group.add_argument('--tp-comm-overlap-cfg', type=str, default=None,

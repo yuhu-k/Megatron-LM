@@ -41,8 +41,6 @@ def get_llama_layer_with_transformer_engine_spec(
                     linear_qkv=LoRAColumnParallelLinear,
                     core_attention=TEDotProductAttention,
                     linear_proj=LoRARowParallelLinear,
-                    q_layernorm=None if qk_layernorm else IdentityOp,
-                    k_layernorm=None if qk_layernorm else IdentityOp,
                 ) ,
             ),
             self_attn_bda=get_bias_dropout_add,

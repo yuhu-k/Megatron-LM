@@ -5,6 +5,7 @@ from functools import reduce
 from typing import Callable, List, Optional, Tuple, Union
 
 import torch
+import torch.distributed
 
 from megatron import core
 from megatron.core import ModelParallelConfig
