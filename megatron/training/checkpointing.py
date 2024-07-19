@@ -841,7 +841,7 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
         else:
             model[0].load_state_dict(state_dict['model'], strict=strict)
     else:
-        # for i in range(len(model)):
+        for i in range(len(model)):
         #     mpu.set_virtual_pipeline_model_parallel_rank(i)
         #     if args.llama_size != None:
         #         def make_chpt(d:dict,name:str):

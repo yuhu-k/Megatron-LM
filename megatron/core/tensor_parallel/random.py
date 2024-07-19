@@ -24,6 +24,9 @@ from megatron.core.utils import safely_set_viewless_tensor_data
 
 from .utils import gather_split_1d_tensor, split_tensor_into_1d_equal_chunks
 
+from large_model_gpu.packed_tensor import hook
+
+
 # Default name for the model parallel rng tracker.
 _MODEL_PARALLEL_RNG_TRACKER_NAME = 'model-parallel-rng'
 _EXPERT_PARALLEL_RNG_TRACKER_NAME = 'expert-parallel-rng'
@@ -248,7 +251,7 @@ class CheckpointFunction(torch.autograd.Function):
             )
 
         # Store everything.
-        ctx.save_for_backward(*args)
+        ctx.save_for_backward(*hook.my_pack_hook(*args))
 
         return outputs
 
@@ -259,7 +262,7 @@ class CheckpointFunction(torch.autograd.Function):
                 "Checkpointing is not compatible with .grad(), "
                 "please use .backward() if possible"
             )
-        inputs = ctx.saved_tensors
+        inputs = hook.my_unpack_hook(*ctx.saved_tensors)
         if ctx.distribute_saved_activations:
             safely_set_viewless_tensor_data(
                 inputs[0], gather_split_1d_tensor(inputs[0].data).view(ctx.input_0_shape)

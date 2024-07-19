@@ -45,6 +45,7 @@ def parse_args(extra_args_provider=None, ignore_unknown_args=False):
     parser = _add_transformer_engine_args(parser)
     parser = _add_retro_args(parser)
     parser = _add_experimental_args(parser)
+    parser = _add_my_lms_args(parser)
 
     # Custom arguments.
     if extra_args_provider is not None:
@@ -1360,6 +1361,23 @@ def _add_mixed_precision_args(parser):
 
     return parser
 
+def _add_my_lms_args(parser): # 0513
+    group = parser.add_argument_group(title='my_lms')
+    group.add_argument('--lms', action='store_true', help='enable lms')
+    group.add_argument('--lms-iterations', type=int, default=None, help='training iters')
+    group.add_argument('--lms-profile', action='store_true', help='enable lms profile')
+    group.add_argument('--lms-path', type=str, help='profiler reuslt path')
+    group.add_argument('--lms-filename', type=str, help='profiler result filename')
+    group.add_argument('--lms-swap', action='store_true', help='enable swap')
+    group.add_argument('--lms-swap-policy', type=str, default=None, help='swapping policy')
+    group.add_argument("--lms-swap_amount_threshold", type=str, default=0)
+    group.add_argument("--lms-tensor_size_threshold", type=int, default=1, help='Minimum Tensor Size Threshold in Formulation (MiB)')
+    group.add_argument("--lms_import_path", type=str)
+    group.add_argument("--lms_scheduler_input", type=str)
+    group.add_argument("--lms_scheduler_output", type=str)
+    group.add_argument("--lms_switch_ratio", type=float, default=1)
+    group.add_argument('--lms_multigpu_lock', default=False, action=argparse.BooleanOptionalAction)
+    return parser
 
 def _add_distributed_args(parser):
     group = parser.add_argument_group(title='distributed')

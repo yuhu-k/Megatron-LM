@@ -39,6 +39,9 @@ from .mappings import (
 from .random import get_cuda_rng_tracker, get_expert_parallel_rng_tracker_name
 from .utils import VocabUtility, divide, split_tensor_along_last_dim
 
+from large_model_gpu.packed_tensor import hook
+
+
 _grad_accum_fusion_available = True
 try:
     import fused_weight_gradient_mlp_cuda
@@ -279,17 +282,17 @@ class LinearWithFrozenWeight(torch.autograd.Function):
     def forward(
         ctx, input, weight, bias, allreduce_dgrad,
     ):
-        ctx.save_for_backward(weight)
         ctx.allreduce_dgrad = allreduce_dgrad
         output = torch.matmul(input, weight.t())
         if bias is not None:
             output = output + bias
+        ctx.save_for_backward(*hook.my_pack_hook(weight))
         return output
 
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_output):
-        (weight,) = ctx.saved_tensors
+        (weight,) = hook.my_unpack_hook(*ctx.saved_tensors)
         grad_input = grad_output.matmul(weight)
 
         if ctx.allreduce_dgrad:
@@ -385,7 +388,6 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         sequence_parallel,
         grad_output_buffer,
     ):
-        ctx.save_for_backward(input, weight)
         ctx.use_bias = bias is not None
         ctx.gradient_accumulation_fusion = gradient_accumulation_fusion
         ctx.allreduce_dgrad = allreduce_dgrad
@@ -408,12 +410,13 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         output = torch.matmul(total_input, weight.t())
         if bias is not None:
             output = output + bias
+        ctx.save_for_backward(*hook.my_pack_hook(input, weight))
         return output
 
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_output):
-        input, weight = ctx.saved_tensors
+        input, weight = hook.my_unpack_hook(*ctx.saved_tensors)
         use_bias = ctx.use_bias
         grad_output_buffer = ctx.grad_output_buffer
 

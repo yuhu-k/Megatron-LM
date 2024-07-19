@@ -9,6 +9,8 @@ from megatron.core.parallel_state import (
 )
 
 from .utils import VocabUtility
+from large_model_gpu.packed_tensor import hook
+
 
 
 class _VocabParallelCrossEntropy(torch.autograd.Function):
@@ -90,15 +92,14 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         ctx.label_smoothing, ctx.vocab_size = label_smoothing, vocab_size
 
         # Store softmax, target-mask and masked-target for backward pass.
-        ctx.save_for_backward(exp_logits, target_mask, masked_target_1d)
-
+        ctx.save_for_backward(*hook.my_pack_hook(exp_logits, target_mask, masked_target_1d))
         return loss
 
     @staticmethod
     def backward(ctx, grad_output):
 
         # Retreive tensors from the forward path.
-        softmax, target_mask, masked_target_1d = ctx.saved_tensors
+        softmax, target_mask, masked_target_1d = hook.my_unpack_hook(*ctx.saved_tensors)
         label_smoothing, vocab_size = ctx.label_smoothing, ctx.vocab_size
 
         # All the inputs have softmax as thier gradient.

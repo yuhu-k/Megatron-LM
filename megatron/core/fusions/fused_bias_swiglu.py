@@ -5,6 +5,8 @@ import torch.nn.functional as F
 
 from megatron.core.jit import jit_fuser
 
+from large_model_gpu.packed_tensor import hook
+
 ###### BIAS SWIGLU FUSION/ NO AUTOGRAD ################
 
 
@@ -42,14 +44,14 @@ class BiasSwiGLUFunction(torch.autograd.Function):
     # bias is an optional argument
     def forward(ctx, input, bias, fp8_input_store):
         input_for_backward = input.to(torch.float8_e4m3fn) if fp8_input_store else input
-        ctx.save_for_backward(input_for_backward, bias)
+        ctx.save_for_backward(*hook.my_pack_hook(input_for_backward, bias))
         ctx.ori_input_dtype = input.dtype
         ctx.fp8_input_store = fp8_input_store
         return bias_swiglu(input, bias)
 
     @staticmethod
     def backward(ctx, grad_output):
-        input, bias = ctx.saved_tensors
+        input, bias = hook.my_unpack_hook(*ctx.saved_tensors)
         input = input.to(ctx.ori_input_dtype) if ctx.fp8_input_store else input
         tmp = bias_swiglu_back(grad_output, input, bias)
         return tmp, tmp, None
@@ -60,14 +62,14 @@ class SwiGLUFunction(torch.autograd.Function):
     # bias is an optional argument
     def forward(ctx, input, fp8_input_store):
         input_for_backward = input.to(torch.float8_e4m3fn) if fp8_input_store else input
-        ctx.save_for_backward(input_for_backward)
+        ctx.save_for_backward(*hook.my_pack_hook(input_for_backward))
         ctx.ori_input_dtype = input.dtype
         ctx.fp8_input_store = fp8_input_store
         return swiglu(input)
 
     @staticmethod
     def backward(ctx, grad_output):
-        input = ctx.saved_tensors[0]
+        input = hook.my_unpack_hook(*ctx.saved_tensors)[0]
         input = input.to(ctx.ori_input_dtype) if ctx.fp8_input_store else input
         tmp = swiglu_back(grad_output, input)
         return tmp, None

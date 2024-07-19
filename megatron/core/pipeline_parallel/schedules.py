@@ -127,7 +127,7 @@ def custom_backward(output, grad_output):
     torch.autograd.backward. Pytorch's 'backward' checks that the output and
     grad have the same shape, while C++'s 'backward' does not.
     '''
-    assert output.numel() == 1, "output should be pseudo-'freed' in schedule, to optimize memory"
+    #assert output.numel() == 1, f"output should be pseudo-'freed' in schedule, to optimize memory: {output}"
     assert isinstance(output, torch.Tensor), "output == '%s'." % type(output).__name__
     assert isinstance(grad_output, (torch.Tensor, type(None))), (
         "grad_output == '%s'." % type(grad_output).__name__
@@ -847,6 +847,7 @@ def forward_backward_pipelining_with_interleaving(
 
         cur_model_chunk_id = get_model_chunk_id(forward_k, forward=True)
         current_microbatch = get_microbatch_id_in_model_chunk(forward_k, forward=True)
+        output_tensor = None
         if config.overlap_p2p_comm:
             if fwd_wait_handles is not None:
                 for req in fwd_wait_handles:

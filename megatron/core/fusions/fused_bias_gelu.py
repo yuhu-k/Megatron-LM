@@ -3,6 +3,8 @@
 import torch
 
 from megatron.core.jit import jit_fuser
+from large_model_gpu.packed_tensor import hook
+
 
 ###### BIAS GELU FUSION/ NO AUTOGRAD ################
 # 1/sqrt(2*pi)-> 0.3989423
@@ -37,12 +39,12 @@ class GeLUFunction(torch.autograd.Function):
     @staticmethod
     # bias is an optional argument
     def forward(ctx, input, bias):
-        ctx.save_for_backward(input, bias)
+        ctx.save_for_backward(*hook.my_pack_hook(input, bias))
         return bias_gelu(bias, input)
 
     @staticmethod
     def backward(ctx, grad_output):
-        input, bias = ctx.saved_tensors
+        input, bias = hook.my_unpack_hook(*ctx.saved_tensors)
         tmp = bias_gelu_back(grad_output, bias, input)
         return tmp, tmp
 
