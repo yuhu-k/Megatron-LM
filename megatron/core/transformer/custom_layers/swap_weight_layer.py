@@ -4,6 +4,8 @@ from typing import Callable, Optional
 import torch
 import transformer_engine as te
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
+
 
 
 class SwapWeightLinear(TELinear):
@@ -171,3 +173,42 @@ class SwapWeightNorm:
             raise Exception('Only LayerNorm and RMSNorm are curently supported')
 
         return instance
+    
+class SwapWeightVocabParallelEmbedding(VocabParallelEmbedding):
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        *,
+        init_method: Callable,
+        reduce_scatter_embeddings: bool = False,
+        config: ModelParallelConfig,
+    ):
+        super().__init__(num_embeddings=num_embeddings,
+                         embedding_dim=embedding_dim,
+                         init_method=init_method,
+                         reduce_scatter_embeddings=reduce_scatter_embeddings,
+                         config=config)
+        self.config = config
+        if config.swap_weight:
+            self.register_forward_pre_hook(self.swap_weight_to_device)
+            self.register_forward_hook(self.swap_weight_to_cpu)
+            self.register_full_backward_pre_hook(self.swap_weight_to_device)
+            self.register_full_backward_hook(self.swap_weight_to_cpu)
+    
+    def swap_weight_to_device(self, *args, **kwargs):
+        if self.config.profile:
+            torch.cuda.nvtx.range_push("swap weight to gpu")
+        device = torch.cuda.current_device()
+        if self.weight.device != device:
+            self.weight.to(device)
+        if self.config.profile:
+            torch.cuda.nvtx.range_pop()
+    
+    def swap_weight_to_cpu(self, *args, **kwargs):
+        if self.config.profile:
+            torch.cuda.nvtx.range_push("swap weight to cpu")
+        if str(self.weight.device) != "cpu":
+            self.weight.to("cpu")
+        if self.config.profile:
+            torch.cuda.nvtx.range_pop()

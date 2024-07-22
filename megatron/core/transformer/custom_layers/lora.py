@@ -1,5 +1,4 @@
 from megatron.core.transformer.custom_layers.transformer_engine import (
-    TELinear,
     condition_init_method,
     TEColumnParallelLinear,
     TERowParallelLinear
@@ -7,7 +6,6 @@ from megatron.core.transformer.custom_layers.transformer_engine import (
 from megatron.core.transformer.custom_layers.swap_weight_layer import SwapWeightLinear
 from megatron.core import ModelParallelConfig
 from typing import Callable
-import torch
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 
@@ -157,3 +155,4 @@ class LoRARowParallelLinear(LoRALinear):
         return make_sharded_tensors_for_checkpoint(
             state_dict, prefix, {'weight': 1}, sharded_offsets
         )
+
