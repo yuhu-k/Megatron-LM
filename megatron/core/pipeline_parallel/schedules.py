@@ -12,6 +12,7 @@ from megatron.core.enums import ModelType
 from megatron.core.pipeline_parallel import p2p_communication
 from megatron.core.transformer.moe.router import MoEAuxLossAutoScaler
 from megatron.core.utils import get_attr_wrapped_model, get_model_config, get_model_type
+from megatron.training.global_vars import get_self_define_timer
 
 # Types
 Shape = Union[List[int], torch.Size]
@@ -185,7 +186,7 @@ def forward_step(
         config.timers('forward-compute', log_level=2).start()
     if config.profile:
         torch.cuda.nvtx.range_push("forward")
-        from megatron.training.global_vars import get_self_define_timer
+        
         timer = get_self_define_timer()
         timer.push("forward")
 
@@ -289,7 +290,7 @@ def backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, c
         config.timers('backward-compute', log_level=2).start()
     if config.profile:
         torch.cuda.nvtx.range_push("backward")
-        from megatron.training.global_vars import get_self_define_timer
+        
         timer = get_self_define_timer()
         timer.push("backward")
     # Retain the grad on the input_tensor.
@@ -1167,6 +1168,62 @@ def send_backward_recv_forward(input_tensor_grads, tensor_shapes, config):
         input_tensors.append(input_tensor)
     return input_tensors
 
+from large_model_gpu import get_pack_hook
+import gc
+
+model_device = None
+def swap_weight_to_cpu(model, config):
+    
+    timer = get_self_define_timer()
+    if config.swap_weight:
+        hook = get_pack_hook()
+        if config.profile:
+            torch.cuda.nvtx.range_push("swap weight to cpu")
+            timer.push("swap weight to cpu")
+        
+        # for name, param in model.named_parameters():
+        #     if param != None and str(param.device) != "cpu" and "lora" not in name:
+        #         # 移动参数到 CPU 并保存到字典中
+        #         hook.pack_tensor_with_name(param, name)
+        #         # 将原参数设置为 None 以释放 GPU 内存
+        #         del(param)
+        #         param.data = param.data.detach().to("cpu")
+        
+        # global model_device
+        # for name, param in model.named_parameters():
+        #      if param != None and str(param.device) != "cpu":
+        #             model_device = param.device
+        #             break
+        # model.to_empty(device="cpu")
+
+        torch.cuda.synchronize()
+        
+        if config.profile:
+            torch.cuda.nvtx.range_pop()
+            timer.pop()
+            
+def swap_weight_to_device(model, config):
+    timer = get_self_define_timer()
+    if config.swap_weight:
+        if config.profile:
+            torch.cuda.nvtx.range_push("swap weight to gpu")
+            timer.push("swap weight to gpu")
+        
+        # hook = get_pack_hook()
+        # for name, param in model.named_parameters():
+        #     if param != None and str(param.device) == "cpu" and "lora" not in name:
+        #         # 从字典中恢复参数到 GPU
+        #         param.data = hook.unpack_tensor_with_name(name)
+        #     print(name, param.device)
+        
+        # global model_device
+        # model.to_empty(device=model_device)
+        
+        torch.cuda.synchronize()
+
+        if config.profile:
+            torch.cuda.nvtx.range_pop()
+            timer.pop()
 
 def forward_backward_pipelining_without_interleaving(
     *,
@@ -1318,7 +1375,6 @@ def forward_backward_pipelining_without_interleaving(
     if num_microbatches_remaining > 0:
         if config.profile:
             torch.cuda.nvtx.range_push("recv forward")
-            from megatron.training.global_vars import get_self_define_timer
             timer = get_self_define_timer()
             timer.push("recv forward")
         input_tensor = recv_forward(recv_tensor_shapes, config)
@@ -1338,6 +1394,7 @@ def forward_backward_pipelining_without_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
+        swap_weight_to_device(model,config)
         output_tensor, num_tokens = forward_step(
             forward_step_func,
             data_iterator,
@@ -1353,10 +1410,12 @@ def forward_backward_pipelining_without_interleaving(
             ),
             current_microbatch=i + num_warmup_microbatches,
         )
+        swap_weight_to_cpu(model,config)
+                
         if config.calculate_per_token_loss:
             if config.profile:
                 torch.cuda.nvtx.range_push("total_num_tokens")
-                from megatron.training.global_vars import get_self_define_timer
+                
                 timer = get_self_define_timer()
                 timer.push("total_num_tokens")
             total_num_tokens += num_tokens.item()
@@ -1373,17 +1432,13 @@ def forward_backward_pipelining_without_interleaving(
         else:
             if config.profile:
                 torch.cuda.nvtx.range_push("send_forward_recv_backward")
-                from megatron.training.global_vars import get_self_define_timer
+                
                 timer = get_self_define_timer()
                 timer.push("send_forward_recv_backward")
-            # l = [torch.randn(256,1,1024).to(f"cuda:{torch.distributed.get_rank()}")]
-            # a = send_forward_recv_backward(
-            #     l, l[0].size(), config
-            # )
+
             output_tensor_grad = send_forward_recv_backward(
                 output_tensor, send_tensor_shapes, config
             )
-            # output_tensor_grad = torch.randn(1024,1,5120,dtype=torch.float16).to(f"cuda:{torch.distributed.get_rank()}")
 
             # Add input_tensor and output_tensor to end of list.
             input_tensors.append(input_tensor)
@@ -1404,9 +1459,11 @@ def forward_backward_pipelining_without_interleaving(
             if config.profile:
                 torch.cuda.nvtx.range_pop()
                 timer.pop()
+            swap_weight_to_device(model,config)
             input_tensor_grad = backward_step(
                 input_tensor, output_tensor, output_tensor_grad, model_type, config
             )
+            swap_weight_to_cpu(model,config)
 
             if last_iteration:
                 input_tensor = None
@@ -1414,7 +1471,7 @@ def forward_backward_pipelining_without_interleaving(
             else:
                 if config.profile:
                     torch.cuda.nvtx.range_push("send_backward_recv_forward")
-                    from megatron.training.global_vars import get_self_define_timer
+                    
                     timer = get_self_define_timer()
                     timer.push("send_backward_recv_forward")
                 # l = [torch.randn(256,1,1024).to(f"cuda:{torch.distributed.get_rank()}")]

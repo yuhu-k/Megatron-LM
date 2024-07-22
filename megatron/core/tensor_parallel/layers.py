@@ -39,7 +39,7 @@ from .mappings import (
 from .random import get_cuda_rng_tracker, get_expert_parallel_rng_tracker_name
 from .utils import VocabUtility, divide, split_tensor_along_last_dim
 
-from large_model_gpu.packed_tensor import hook
+from large_model_gpu import get_pack_hook
 
 
 _grad_accum_fusion_available = True
@@ -286,12 +286,14 @@ class LinearWithFrozenWeight(torch.autograd.Function):
         output = torch.matmul(input, weight.t())
         if bias is not None:
             output = output + bias
+        hook = get_pack_hook()
         ctx.save_for_backward(*hook.my_pack_hook(weight))
         return output
 
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_output):
+        hook = get_pack_hook()
         (weight,) = hook.my_unpack_hook(*ctx.saved_tensors)
         grad_input = grad_output.matmul(weight)
 
@@ -410,12 +412,14 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         output = torch.matmul(total_input, weight.t())
         if bias is not None:
             output = output + bias
+        hook = get_pack_hook()
         ctx.save_for_backward(*hook.my_pack_hook(input, weight))
         return output
 
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_output):
+        hook = get_pack_hook()
         input, weight = hook.my_unpack_hook(*ctx.saved_tensors)
         use_bias = ctx.use_bias
         grad_output_buffer = ctx.grad_output_buffer

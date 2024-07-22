@@ -1,12 +1,82 @@
 from megatron.core.transformer.custom_layers.transformer_engine import (
+    TELinear,
+    condition_init_method,
     TEColumnParallelLinear,
     TERowParallelLinear
 )
+from megatron.core.transformer.custom_layers.swap_weight_layer import SwapWeightLinear
 from megatron.core import ModelParallelConfig
 from typing import Callable
+import torch
+from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 
-class LoRAColumnParallelLinear(TEColumnParallelLinear):
+class LoRALinear(SwapWeightLinear):
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        *,
+        parallel_mode: str,
+        config: ModelParallelConfig,
+        init_method: Callable,
+        bias: bool,
+        skip_bias_add: bool,
+        skip_weight_param_allocation: bool,
+        tp_comm_buffer_name: str = None,
+    ):
+        super().__init__(
+            input_size=input_size,
+            output_size=output_size,
+            parallel_mode=parallel_mode,
+            config=config,
+            init_method=init_method,
+            bias=bias,
+            skip_bias_add=skip_bias_add,
+            skip_weight_param_allocation=skip_weight_param_allocation,
+            tp_comm_buffer_name=tp_comm_buffer_name,
+        )
+        self.config = config
+        self.rank = config.finetune_lora_rank
+        self.alpha = config.finetune_lora_alpha
+        if config.tensor_model_parallel_size != None:
+            if parallel_mode == "column":
+                output_size = int(output_size / config.tensor_model_parallel_size)
+            elif config.tensor_model_parallel_size != None:
+                input_size = int(input_size / config.tensor_model_parallel_size)
+            self.rank = int(self.rank / config.tensor_model_parallel_size)
+        self.lora_a = TEColumnParallelLinear(
+                input_size=input_size,
+                output_size=self.rank,
+                config=config,
+                init_method=config.init_method,
+                gather_output=False,
+                bias=bias,
+                skip_bias_add=skip_bias_add,
+                is_expert=False,
+                skip_weight_param_allocation=skip_weight_param_allocation,
+                tp_comm_buffer_name=tp_comm_buffer_name
+            )
+        self.lora_b = TERowParallelLinear(
+            input_size=self.rank,
+            output_size=output_size,
+            config=config,
+            init_method=init_method,
+            bias=bias,
+            input_is_parallel=True,
+            skip_bias_add=skip_bias_add,
+            is_expert=False,
+            tp_comm_buffer_name=tp_comm_buffer_name,
+        )
+    
+    def forward(self, x):
+        out = super().forward(x)[0]
+        if self.config.finetune_method == "lora":
+            lora_out = (self.alpha / self.rank) * self.lora_b(self.lora_a(x)[0])[0]
+            out = out + lora_out
+        return out, None
+
+class LoRAColumnParallelLinear(LoRALinear):
     def __init__(
         self,
         input_size: int,
@@ -20,127 +90,33 @@ class LoRAColumnParallelLinear(TEColumnParallelLinear):
         is_expert: bool,
         skip_weight_param_allocation: bool = False,
         tp_comm_buffer_name: str = None,
-        mlp_layer_num: int = None
     ):
+        if gather_output:
+            raise ValueError('Transformer Engine linear layers do not support gather_output = True')
+
+        if is_expert:
+            raise ValueError('Transformer Engine linear layers do not yet support MoE')
+        
         super().__init__(
             input_size=input_size,
             output_size=output_size,
+            parallel_mode="column",
             config=config,
-            init_method=init_method,
-            gather_output=gather_output,
+            init_method=condition_init_method(config, init_method),
             bias=bias,
             skip_bias_add=skip_bias_add,
-            is_expert=is_expert,
             skip_weight_param_allocation=skip_weight_param_allocation,
-            tp_comm_buffer_name=tp_comm_buffer_name
+            tp_comm_buffer_name=tp_comm_buffer_name,
         )
-        
-        self.mlp_layer_num = mlp_layer_num
-        self.config = config
-        
-        if config.finetune_mlp and mlp_layer_num == 1:
-            self.rank = config.finetune_lora_rank
-            self.alpha = config.finetune_lora_alpha
-            if config.tensor_model_parallel_size != None:
-                output_size = int(output_size / config.tensor_model_parallel_size)
-                self.rank = int(self.rank / config.tensor_model_parallel_size)
-            
-            self.gate_lora_a = TEColumnParallelLinear(
-                input_size=input_size,
-                output_size=self.rank,
-                config=config,
-                init_method=config.init_method,
-                gather_output=gather_output,
-                bias=bias,
-                skip_bias_add=skip_bias_add,
-                is_expert=is_expert,
-                skip_weight_param_allocation=skip_weight_param_allocation,
-                tp_comm_buffer_name=tp_comm_buffer_name
-            )
-            self.gate_lora_b = TERowParallelLinear(
-                input_size=self.rank,
-                output_size=output_size,
-                config=config,
-                init_method=init_method,
-                bias=bias,
-                input_is_parallel=True,
-                skip_bias_add=skip_bias_add,
-                is_expert=is_expert,
-                tp_comm_buffer_name=tp_comm_buffer_name,
-            )
-            self.up_lora_a = TEColumnParallelLinear(
-                input_size=input_size,
-                output_size=self.rank,
-                config=config,
-                init_method=config.init_method,
-                gather_output=gather_output,
-                bias=bias,
-                skip_bias_add=skip_bias_add,
-                is_expert=is_expert,
-                skip_weight_param_allocation=skip_weight_param_allocation,
-                tp_comm_buffer_name=tp_comm_buffer_name
-            )
-            self.up_lora_b = TERowParallelLinear(
-                input_size=self.rank,
-                output_size=output_size,
-                config=config,
-                init_method=init_method,
-                bias=bias,
-                input_is_parallel=True,
-                skip_bias_add=skip_bias_add,
-                is_expert=is_expert,
-                tp_comm_buffer_name=tp_comm_buffer_name,
-            )
-        elif (self.mlp_layer_num == None or config.finetune_mlp) and config.finetune_method == "lora":
-            self.rank = config.finetune_lora_rank
-            self.alpha = config.finetune_lora_alpha
-            if config.tensor_model_parallel_size != None:
-                output_size = int(output_size / config.tensor_model_parallel_size)
-                self.rank = int(self.rank / config.tensor_model_parallel_size)
-            
-            self.lora_a = TEColumnParallelLinear(
-                input_size=input_size,
-                output_size=self.rank,
-                config=config,
-                init_method=config.init_method,
-                gather_output=gather_output,
-                bias=bias,
-                skip_bias_add=skip_bias_add,
-                is_expert=is_expert,
-                skip_weight_param_allocation=skip_weight_param_allocation,
-                tp_comm_buffer_name=tp_comm_buffer_name
-            )
-            self.lora_b = TERowParallelLinear(
-                input_size=self.rank,
-                output_size=output_size,
-                config=config,
-                init_method=init_method,
-                bias=bias,
-                input_is_parallel=True,
-                skip_bias_add=skip_bias_add,
-                is_expert=is_expert,
-                tp_comm_buffer_name=tp_comm_buffer_name,
-            )
-        else:
-            self.lora_a = None
-            self.lora_b = None
-        
-    def forward(self, x):
-        out = super().forward(x)[0]
-        if self.config.finetune_mlp and self.mlp_layer_num == 1:
-            import torch
-            out = torch.chunk(out, 2, dim=-1)
-            gate = (self.alpha / self.rank) * self.gate_lora_b(self.gate_lora_a(out[0]))[0]
-            up = (self.alpha / self.rank) * self.up_lora_b(self.up_lora_a(out[1]))[1]
-            out = torch.cat([gate,up], dim=-1)
-        elif (self.mlp_layer_num == None or self.config.finetune_mlp) and self.config.finetune_method == "lora":
-            lora_out = self.lora_a(x)[0]
-            lora_out = (self.alpha / self.rank) * self.lora_b(lora_out)[0]
-            out = out + lora_out
 
-        return out,None
+    def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
+        """ Sharding along axis 0, bias sharded """
+        state_dict = self.state_dict(prefix='', keep_vars=True)
+        return make_sharded_tensors_for_checkpoint(
+            state_dict, prefix, {'weight': 0, 'bias': 0}, sharded_offsets
+        )
             
-class LoRARowParallelLinear(TERowParallelLinear):
+class LoRARowParallelLinear(LoRALinear):
     def __init__(
         self,
         input_size: int,
@@ -153,64 +129,31 @@ class LoRARowParallelLinear(TERowParallelLinear):
         skip_bias_add: bool,
         is_expert: bool,
         tp_comm_buffer_name: str = None,
-        is_mlp: bool = False
     ):
+        
+        if not input_is_parallel:
+            raise ValueError(
+                "Transformer Engine linear layers do not support input_is_parallel = False"
+            )
+
+        if is_expert:
+            raise ValueError('Transformer Engine linear layers do not yet support MoE')
+        
         super().__init__(
             input_size=input_size,
             output_size=output_size,
+            parallel_mode="row",
             config=config,
-            init_method=init_method,
+            init_method=condition_init_method(config, init_method),
             bias=bias,
-            input_is_parallel=input_is_parallel,
             skip_bias_add=skip_bias_add,
-            is_expert=is_expert,
+            skip_weight_param_allocation=False,  # We don't currently use this for row parallel layers
             tp_comm_buffer_name=tp_comm_buffer_name,
         )
-        
-        self.is_mlp = is_mlp
-        self.config = config
-        
-        
-        if (not is_mlp or config.finetune_mlp) and config.finetune_method == "lora":
-            self.rank = config.finetune_lora_rank
-            self.alpha = config.finetune_lora_alpha
-            if config.tensor_model_parallel_size != None:
-                input_size = int(input_size / config.tensor_model_parallel_size)
-                self.rank = int(self.rank / config.tensor_model_parallel_size)
-            
-            self.lora_a = TEColumnParallelLinear(
-                input_size=input_size,
-                output_size=self.rank,
-                config=config,
-                init_method=config.init_method,
-                gather_output=False,
-                bias=bias,
-                skip_bias_add=skip_bias_add,
-                is_expert=is_expert,
-                skip_weight_param_allocation=False,
-                tp_comm_buffer_name=tp_comm_buffer_name
-            )
-            self.lora_b = TERowParallelLinear(
-                input_size=self.rank,
-                output_size=output_size,
-                config=config,
-                init_method=init_method,
-                bias=bias,
-                input_is_parallel=input_is_parallel,
-                skip_bias_add=skip_bias_add,
-                is_expert=is_expert,
-                tp_comm_buffer_name=tp_comm_buffer_name,
-            )
-        else:
-            self.lora_a = None
-            self.lora_b = None
-        
-        
-    def forward(self, x):
-        out = super().forward(x)[0]
-        if (not self.is_mlp or self.config.finetune_mlp) and self.config.finetune_method == "lora":
-            lora_out = self.lora_a(x)[0]
-            lora_out = (self.alpha / self.rank) * self.lora_b(lora_out)[0]
-            out = out + lora_out
-
-        return out,None
+    
+    def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
+        """ Sharding along axis 1, bias not sharded """
+        state_dict = self.state_dict(prefix='', keep_vars=True)
+        return make_sharded_tensors_for_checkpoint(
+            state_dict, prefix, {'weight': 1}, sharded_offsets
+        )

@@ -12,6 +12,9 @@ from .context import context
 
 from collections import defaultdict, namedtuple
 from .profiler import Kernel, TimeSegment, ProfilerInformation
+from .packed_tensor import PackHookInitializer
+
+_GLOBAL_HOOK = None
 
 def add_arguments(parser):
     policy_add_arguments(parser)
@@ -53,3 +56,10 @@ def init(device, args, enable_multi_gpu=False, ipc_object=None, skip_sync_iterat
         #"CUDA_VISIBLE_DEVICES": os.environ['CUDA_VISIBLE_DEVICES'],
         "device": device,
     })
+
+def init_pack_hook(is_profile, is_enable, nonblocking):
+    global _GLOBAL_HOOK
+    _GLOBAL_HOOK = PackHookInitializer(is_profile, is_enable, nonblocking)
+    
+def get_pack_hook():
+    return _GLOBAL_HOOK

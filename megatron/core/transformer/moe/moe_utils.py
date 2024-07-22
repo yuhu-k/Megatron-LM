@@ -7,7 +7,7 @@ import torch
 from megatron.core import parallel_state
 
 # 0719
-from large_model_gpu.packed_tensor import hook
+from large_model_gpu import packed_tensor
 
 def switch_load_balancing_loss_func(
     probs: torch.Tensor, tokens_per_expert: torch.Tensor, topk: int, moe_aux_loss_coeff: float
@@ -101,6 +101,7 @@ class MoEAuxLossAutoScaler(torch.autograd.Function):
         Returns:
             torch.Tensor: The output tensor.
         """
+        hook = packed_tensor()
         ctx.save_for_backward(*hook.my_pack_hook(aux_loss))
         return output
 
@@ -114,6 +115,7 @@ class MoEAuxLossAutoScaler(torch.autograd.Function):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: The gradient of the output, scaled auxiliary loss gradient.
         """
+        hook = packed_tensor()
         (aux_loss,) = hook.my_unpack_hook(*ctx.saved_tensors)
         aux_loss_backward_scale = MoEAuxLossAutoScaler.main_loss_backward_scale
         scaled_aux_loss_grad = torch.ones_like(aux_loss) * aux_loss_backward_scale

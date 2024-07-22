@@ -61,7 +61,6 @@ from .global_vars import (
 
 # 0513 integrate lms to megatron lm
 import large_model_gpu as lms
-from large_model_gpu.packed_tensor import hook
 
 stimer = StragglerDetector()
 
@@ -197,20 +196,22 @@ def pretrain(train_valid_test_dataset_provider,
 
     args = get_args()
     timers = get_timers()
+    
 
     if args.log_progress:
         append_to_progress_log("Starting job")
 
     # Set pytorch JIT layer fusion options and warmup JIT functions.
     set_jit_fusion_options()
-    
+
+    lms.init_pack_hook(args.profile, args.lms, args.lms_swap_nonblocking)
     if args.lms:
         rank = torch.distributed.get_rank()
         ipc_object = lms.IpcObject()
         ipc_object.set_rank(rank)
         device = ipc_object.device
         lms.init(device, args, enable_multi_gpu=True, ipc_object=ipc_object, skip_sync_iterations=-1)
-        hook.enable()
+        torch.autograd.graph.saved_tensors_hooks(lms.get_pack_hook().my_pack_hook, lms.get_pack_hook().my_unpack_hook)
 
     # Adjust the startup time so it reflects the largest value.
     # This will be closer to what scheduler will see (outside of

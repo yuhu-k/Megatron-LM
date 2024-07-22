@@ -74,32 +74,30 @@ class MLP(MegatronModule):
         else:
             self.pre_norm = None
 
-        if config.finetune and config.finetune_method == "lora":
-            self.linear_fc1 = build_module(
+        if config.gated_linear_unit:
+            self.linear_fc1_1 = build_module(
                 submodules.linear_fc1,
                 self.input_size,
-                ffn_hidden_size,
+                int(ffn_hidden_size / 2),
                 config=self.config,
                 init_method=self.config.init_method,
                 gather_output=False,
                 bias=self.config.add_bias_linear,
                 skip_bias_add=True,
                 is_expert=is_expert,
-                tp_comm_buffer_name='fc1',
-                mlp_layer_num=1,
+                tp_comm_buffer_name='fc1-1',
             )
-            self.linear_fc2 = build_module(
-                submodules.linear_fc2,
-                self.config.ffn_hidden_size,
-                self.config.hidden_size,
+            self.linear_fc1_2 = build_module(
+                submodules.linear_fc1,
+                self.input_size,
+                int(ffn_hidden_size / 2),
                 config=self.config,
-                init_method=self.config.output_layer_init_method,
+                init_method=self.config.init_method,
+                gather_output=False,
                 bias=self.config.add_bias_linear,
-                input_is_parallel=True,
                 skip_bias_add=True,
                 is_expert=is_expert,
-                tp_comm_buffer_name='fc2',
-                mlp_layer_num=2,
+                tp_comm_buffer_name='fc1-2',
             )
         else:
             self.linear_fc1 = build_module(
@@ -114,18 +112,18 @@ class MLP(MegatronModule):
                 is_expert=is_expert,
                 tp_comm_buffer_name='fc1',
             )
-            self.linear_fc2 = build_module(
-                submodules.linear_fc2,
-                self.config.ffn_hidden_size,
-                self.config.hidden_size,
-                config=self.config,
-                init_method=self.config.output_layer_init_method,
-                bias=self.config.add_bias_linear,
-                input_is_parallel=True,
-                skip_bias_add=True,
-                is_expert=is_expert,
-                tp_comm_buffer_name='fc2',
-            )
+        self.linear_fc2 = build_module(
+            submodules.linear_fc2,
+            self.config.ffn_hidden_size,
+            self.config.hidden_size,
+            config=self.config,
+            init_method=self.config.output_layer_init_method,
+            bias=self.config.add_bias_linear,
+            input_is_parallel=True,
+            skip_bias_add=True,
+            is_expert=is_expert,
+            tp_comm_buffer_name='fc2',
+        )
 
         self.activation_func = self.config.activation_func
 
@@ -139,8 +137,13 @@ class MLP(MegatronModule):
         
         # [s, b, 4 * h/p]
         if self.pre_norm is not None:
-            norm_hidden_states = self.pre_norm(hidden_states)
-            intermediate_parallel, bias_parallel = self.linear_fc1(norm_hidden_states)
+            hidden_states = self.pre_norm(hidden_states)
+
+        if self.config.gated_linear_unit:
+            gate = self.linear_fc1_1(hidden_states)
+            up = self.linear_fc1_2(hidden_states)
+            intermediate_parallel = torch.cat([gate[0],up[0]], dim=-1)
+            bias_parallel = gate[1] + up[1] if gate[1] != None and up[1] != None else None
         else:
             intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
 
@@ -303,3 +306,4 @@ def apply_swiglu_sharded_factory(original_sh_ten, sharded_offsets):
         sh_ten_merge_fn,
         original_sh_ten.replica_id,
     )
+    

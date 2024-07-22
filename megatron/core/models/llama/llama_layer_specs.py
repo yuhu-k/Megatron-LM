@@ -7,7 +7,6 @@ from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubm
 from megatron.core.transformer.custom_layers.transformer_engine import (
     TEDotProductAttention,
     TELayerNormColumnParallelLinear,
-    TENorm,
     TERowParallelLinear,
     TEColumnParallelLinear,
 )
@@ -23,6 +22,7 @@ from megatron.core.transformer.custom_layers.lora import (
     LoRAColumnParallelLinear,
     LoRARowParallelLinear
 )
+from megatron.core.transformer.custom_layers.swap_weight_layer import SwapWeightNorm
 # Use this spec to use lower level Transformer Engine modules (required for fp8 training)
 def get_llama_layer_with_transformer_engine_spec(
     num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
@@ -37,14 +37,14 @@ def get_llama_layer_with_transformer_engine_spec(
                 module=SelfAttention,
                 params={"attn_mask_type": AttnMaskType.causal},
                 submodules=SelfAttentionSubmodules(
-                    qkv_layernorm=TENorm,
+                    qkv_layernorm=SwapWeightNorm,
                     linear_qkv=LoRAColumnParallelLinear,
                     core_attention=TEDotProductAttention,
                     linear_proj=LoRARowParallelLinear,
                 ) ,
             ),
             self_attn_bda=get_bias_dropout_add,
-            pre_mlp_layernorm=TENorm if num_experts else IdentityOp,
+            pre_mlp_layernorm=SwapWeightNorm if num_experts else IdentityOp,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
         ),
@@ -61,14 +61,14 @@ def _get_mlp_module_spec(
             submodules=MLPSubmodules(
                 linear_fc1=LoRAColumnParallelLinear if use_te else ColumnParallelLinear,
                 linear_fc2=LoRARowParallelLinear if use_te else RowParallelLinear,
-                pre_norm=TENorm if use_te else IdentityOp,
+                pre_norm=SwapWeightNorm if use_te else IdentityOp,
             ),
         )
     else:
         # Mixture of experts with modules in megatron core.
         return ModuleSpec(
             module=MoELayer,
-            submodules=MLPSubmodules(pre_norm=TENorm,linear_fc1=ColumnParallelLinear, linear_fc2=RowParallelLinear,)
+            submodules=MLPSubmodules(pre_norm=SwapWeightNorm,linear_fc1=ColumnParallelLinear, linear_fc2=RowParallelLinear,)
             if not moe_grouped_gemm
             else None,
         )

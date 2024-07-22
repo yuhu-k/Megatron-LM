@@ -184,35 +184,63 @@ def unpack_hook(tensor):
     #return tensor
 
 class PackHookInitializer:
-    def __init__(self) -> None:
-        self.__enable = False
-        
-    def enable(self) -> None:
+    def __init__(self, profile=False, is_enable=False, non_blocking = False) -> None:
+        self.__enable = is_enable
+        self.__profile = profile
+        self.blocking = not non_blocking
+        self.name_list = {}
+    
+    def enable(self):
         self.__enable = True
-        
-    def is_enable(self):
-        return self.__enable
+    
+    def disable(self):
+        self.__enable = False
 
+    @torch.no_grad()
     def my_pack_hook(self, *tensors):
         if self.__enable:
             l:list[torch.Tensor] = []
             for tensor in tensors:
-                torch.cuda.nvtx.range_push("Pack tensor")
+                if self.__profile:
+                    torch.cuda.nvtx.range_push("Pack tensor")
                 l.append(torch.tensor([[pack_hook(tensor)]]))
-                torch.cuda.nvtx.range_pop()
+                if self.blocking:
+                    self.wait()
+                if self.__profile:
+                    torch.cuda.nvtx.range_pop()
             return tuple(l)
         else:
             return tensors
 
+    @torch.no_grad()
     def my_unpack_hook(self, *tensors) -> tuple:
         if self.__enable:
             l = []
             for tensor in tensors:
-                torch.cuda.nvtx.range_push("Unpack tensor")
+                if self.__profile:
+                    torch.cuda.nvtx.range_push("Unpack tensor")
                 l.append(unpack_hook(int(tensor[0][0])))
-                torch.cuda.nvtx.range_pop()
+                if self.blocking:
+                    self.wait()
+                if self.__profile:
+                    torch.cuda.nvtx.range_pop()
             return tuple(l)
         else:
             return tensors
+
+    def wait(self):
+        torch.cuda.synchronize()
         
-hook = PackHookInitializer()
+    def pack_tensor_with_name(self, tensor, name):
+        if self.name_list.get(name) != None:
+            print(f"Error, tensor{name} is in cpu")
+            exit(1)
+        self.name_list[name] = self.my_pack_hook(tensor)
+    
+    def unpack_tensor_with_name(self, name):
+        if self.name_list.get(name) == None:
+            print(f"Error, tensor{name} is not in cpu")
+            exit(1)
+        unpack = self.my_unpack_hook(self.name_list[name])
+        return unpack[0]
+        

@@ -7,7 +7,7 @@ import torch.nn as nn
 
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.utils import get_default_causal_mask
-from large_model_gpu.packed_tensor import hook
+from large_model_gpu import get_pack_hook
 
 
 
@@ -25,6 +25,8 @@ class ScaledUpperTriangMaskedSoftmax(torch.autograd.Function):
 
         scale_t = torch.tensor([scale])
         softmax_results = scaled_upper_triang_masked_softmax_cuda.forward(inputs, scale_t[0])
+        
+        hook = get_pack_hook()
 
         ctx.save_for_backward(*hook.my_pack_hook(softmax_results, scale_t))
         return softmax_results
@@ -32,6 +34,8 @@ class ScaledUpperTriangMaskedSoftmax(torch.autograd.Function):
     @staticmethod
     def backward(ctx, output_grads):
         import scaled_upper_triang_masked_softmax_cuda
+        
+        hook = get_pack_hook()
 
         softmax_results, scale_t =  hook.my_unpack_hook(*ctx.saved_tensors)
         input_grads = scaled_upper_triang_masked_softmax_cuda.backward(
@@ -54,6 +58,8 @@ class ScaledMaskedSoftmax(torch.autograd.Function):
         import scaled_masked_softmax_cuda
 
         scale_t = torch.tensor([scale])
+        
+        hook = get_pack_hook()
 
         softmax_results = scaled_masked_softmax_cuda.forward(inputs, mask, scale_t[0])
         ctx.save_for_backward(*hook.my_pack_hook(softmax_results, scale_t))
@@ -62,6 +68,7 @@ class ScaledMaskedSoftmax(torch.autograd.Function):
     @staticmethod
     def backward(ctx, output_grads):
         import scaled_masked_softmax_cuda
+        hook = get_pack_hook()
 
         softmax_results, scale_t = hook.my_unpack_hook(*ctx.saved_tensors)
 
@@ -81,6 +88,7 @@ class ScaledSoftmax(torch.autograd.Function):
         import scaled_softmax_cuda
 
         scale_t = torch.tensor([scale])
+        hook = get_pack_hook()
 
         softmax_results = scaled_softmax_cuda.forward(inputs, scale_t[0])
         ctx.save_for_backward(*hook.my_pack_hook(softmax_results, scale_t))
@@ -89,6 +97,7 @@ class ScaledSoftmax(torch.autograd.Function):
     @staticmethod
     def backward(ctx, output_grads):
         import scaled_softmax_cuda
+        hook = get_pack_hook()
 
         softmax_results, scale_t = hook.my_unpack_hook(*ctx.saved_tensors)
 

@@ -295,6 +295,8 @@ class TransformerConfig(ModelParallelConfig):
     finetune_mlp: bool = False
     
     profile: bool = False
+    
+    swap_weight: bool = False
 
     def __post_init__(self):
         """ Python dataclass method that is used to modify attributes after initialization.

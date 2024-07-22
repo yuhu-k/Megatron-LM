@@ -9,7 +9,7 @@ MODEL_TYPE="13b" #"13b"
 # Change for multinode config
 MASTER_ADDR=eclab40902b # mgmt01
 MASTER_PORT=6000
-NNODES=1 #2
+NNODES=1
 WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 HOSTNAME=$(hostname)
 TIME=$(date '+%Y-%m-%d_%H:%M')
@@ -76,7 +76,7 @@ GPT_ARGS="
     --tokenizer-type Llama2Tokenizer \
     --tokenizer-model ${TOKENIZER_MODEL} \
     --micro-batch-size 1 \
-    --global-batch-size 16 \
+    --global-batch-size 4 \
     --lr 0.00015 \
     --train-iters 100 \
     --lr-decay-iters 320000 \
@@ -97,8 +97,10 @@ GPT_ARGS="
 	--position-embedding-type rope \
 	--no-masked-softmax-fusion \
 	--attention-softmax-in-fp32 \
-    --train-iters 100
+    --train-iters 100 \
 "
+
+#--num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree))
 
 LLAMA_ARGS="
     --llama-size ${MODEL_TYPE} \
@@ -143,7 +145,7 @@ LMS_ARGS="
     --lms-filename $FILENAME \
     --lms-profile \
     --lms-swap \
-    --lms-swap-policy dynamic-early
+    --lms-swap-policy dynamic-early \
 "
 if [ -d $RESULTS_PATH ]; then
     mkdir -p $RESULTS_PATH
@@ -174,5 +176,7 @@ torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     --transformer-impl transformer_engine \
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \
-    $PROF_ARGS
-    # $LMS_ARGS \
+    $PROF_ARGS \
+    $LMS_ARGS \
+    --swap-weight
+    

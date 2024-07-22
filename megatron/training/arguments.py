@@ -607,6 +607,7 @@ def core_transformer_config_from_args(args, config_class=None):
     kw_args['finetune_lora_quantize_base'] = args.finetune_lora_quantize_base
     kw_args['finetune_mlp'] = args.finetune_mlp
     kw_args['profile'] = args.profile
+    kw_args['swap_weight'] = args.swap_weight
     if args.swiglu:
         kw_args['activation_func'] = F.silu
         kw_args['gated_linear_unit'] = True
@@ -1377,6 +1378,8 @@ def _add_my_lms_args(parser): # 0513
     group.add_argument("--lms_scheduler_output", type=str)
     group.add_argument("--lms_switch_ratio", type=float, default=1)
     group.add_argument('--lms_multigpu_lock', default=False, action=argparse.BooleanOptionalAction)
+    group.add_argument('--lms-swap-nonblocking', default=False, action="store_true", help="Enable nonblocking swapping")
+    group.add_argument('--swap-weight', default=False, action="store_true", help="Enable swapping weight")
     return parser
 
 def _add_distributed_args(parser):
