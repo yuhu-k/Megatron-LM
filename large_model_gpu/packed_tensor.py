@@ -196,32 +196,36 @@ class PackHookInitializer:
     def disable(self):
         self.__enable = False
 
-    @torch.no_grad()
     def my_pack_hook(self, *tensors):
         if self.__enable:
             l:list[torch.Tensor] = []
             for tensor in tensors:
                 if self.__profile:
                     torch.cuda.nvtx.range_push("Pack tensor")
-                l.append(torch.tensor([[pack_hook(tensor)]]))
-                if self.blocking:
-                    self.wait()
+                if tensor != None:
+                    l.append(torch.tensor([[pack_hook(tensor)]]))
+                    if self.blocking:
+                        self.wait()
+                else:
+                    l.append(None)
                 if self.__profile:
                     torch.cuda.nvtx.range_pop()
             return tuple(l)
         else:
             return tensors
 
-    @torch.no_grad()
     def my_unpack_hook(self, *tensors) -> tuple:
         if self.__enable:
             l = []
             for tensor in tensors:
                 if self.__profile:
                     torch.cuda.nvtx.range_push("Unpack tensor")
-                l.append(unpack_hook(int(tensor[0][0])))
-                if self.blocking:
-                    self.wait()
+                if tensor != None:
+                    l.append(unpack_hook(int(tensor[0][0])))
+                    if self.blocking:
+                        self.wait()
+                else:
+                    l.append(None)
                 if self.__profile:
                     torch.cuda.nvtx.range_pop()
             return tuple(l)
@@ -230,7 +234,7 @@ class PackHookInitializer:
 
     def wait(self):
         torch.cuda.synchronize()
-        
+    
     def pack_tensor_with_name(self, tensor, name):
         if self.name_list.get(name) != None:
             print(f"Error, tensor{name} is in cpu")

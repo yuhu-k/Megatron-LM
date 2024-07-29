@@ -7,9 +7,9 @@ from megatron.core.transformer.custom_layers.swap_weight_layer import SwapWeight
 from megatron.core import ModelParallelConfig
 from typing import Callable
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
+from megatron.core.transformer.module import MegatronModule
 
-
-class LoRALinear(SwapWeightLinear):
+class LoRAOriginalLinear(SwapWeightLinear):
     def __init__(
         self,
         input_size: int,
@@ -34,42 +34,74 @@ class LoRALinear(SwapWeightLinear):
             skip_weight_param_allocation=skip_weight_param_allocation,
             tp_comm_buffer_name=tp_comm_buffer_name,
         )
-        self.config = config
+
+class LoRALinear(MegatronModule):
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        *,
+        parallel_mode: str,
+        config: ModelParallelConfig,
+        init_method: Callable,
+        bias: bool,
+        skip_bias_add: bool,
+        skip_weight_param_allocation: bool,
+        tp_comm_buffer_name: str = None,
+        finetune_weight: bool = True,
+    ):
+        super().__init__(config)
+        self.weight = LoRAOriginalLinear(
+            input_size=input_size,
+            output_size=output_size,
+            parallel_mode=parallel_mode,
+            config=config,
+            init_method=init_method,
+            bias=bias,
+            skip_bias_add=skip_bias_add,
+            skip_weight_param_allocation=skip_weight_param_allocation,
+            tp_comm_buffer_name=tp_comm_buffer_name,
+        )
         self.rank = config.finetune_lora_rank
         self.alpha = config.finetune_lora_alpha
+        self.finetune_weight = finetune_weight
         if config.tensor_model_parallel_size != None:
             if parallel_mode == "column":
                 output_size = int(output_size / config.tensor_model_parallel_size)
             elif config.tensor_model_parallel_size != None:
                 input_size = int(input_size / config.tensor_model_parallel_size)
             self.rank = int(self.rank / config.tensor_model_parallel_size)
-        self.lora_a = TEColumnParallelLinear(
-                input_size=input_size,
-                output_size=self.rank,
+        
+        if finetune_weight:
+            self.lora_a = SwapWeightLinear(
+                    input_size=input_size,
+                    output_size=self.rank,
+                    parallel_mode="column",
+                    config=config,
+                    init_method=config.init_method,
+                    bias=bias,
+                    skip_bias_add=skip_bias_add,
+                    skip_weight_param_allocation=skip_weight_param_allocation,
+                    tp_comm_buffer_name=tp_comm_buffer_name,
+                    swap_weight=False
+                )
+            self.lora_b = SwapWeightLinear(
+                input_size=self.rank,
+                output_size=output_size,
+                parallel_mode="row",
                 config=config,
-                init_method=config.init_method,
-                gather_output=False,
+                init_method=init_method,
                 bias=bias,
                 skip_bias_add=skip_bias_add,
-                is_expert=False,
-                skip_weight_param_allocation=skip_weight_param_allocation,
-                tp_comm_buffer_name=tp_comm_buffer_name
+                skip_weight_param_allocation=False,
+                tp_comm_buffer_name=tp_comm_buffer_name,
+                swap_weight=False
             )
-        self.lora_b = TERowParallelLinear(
-            input_size=self.rank,
-            output_size=output_size,
-            config=config,
-            init_method=init_method,
-            bias=bias,
-            input_is_parallel=True,
-            skip_bias_add=skip_bias_add,
-            is_expert=False,
-            tp_comm_buffer_name=tp_comm_buffer_name,
-        )
+        
     
     def forward(self, x):
-        out = super().forward(x)[0]
-        if self.config.finetune_method == "lora":
+        out = self.weight(x)[0]
+        if self.finetune_weight:
             lora_out = (self.alpha / self.rank) * self.lora_b(self.lora_a(x)[0])[0]
             out = out + lora_out
         return out, None
@@ -88,6 +120,7 @@ class LoRAColumnParallelLinear(LoRALinear):
         is_expert: bool,
         skip_weight_param_allocation: bool = False,
         tp_comm_buffer_name: str = None,
+        finetune_weight: bool = True,
     ):
         if gather_output:
             raise ValueError('Transformer Engine linear layers do not support gather_output = True')
@@ -105,6 +138,7 @@ class LoRAColumnParallelLinear(LoRALinear):
             skip_bias_add=skip_bias_add,
             skip_weight_param_allocation=skip_weight_param_allocation,
             tp_comm_buffer_name=tp_comm_buffer_name,
+            finetune_weight=finetune_weight,
         )
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
@@ -127,6 +161,7 @@ class LoRARowParallelLinear(LoRALinear):
         skip_bias_add: bool,
         is_expert: bool,
         tp_comm_buffer_name: str = None,
+        finetune_weight: bool = True
     ):
         
         if not input_is_parallel:
@@ -147,6 +182,7 @@ class LoRARowParallelLinear(LoRALinear):
             skip_bias_add=skip_bias_add,
             skip_weight_param_allocation=False,  # We don't currently use this for row parallel layers
             tp_comm_buffer_name=tp_comm_buffer_name,
+            finetune_weight=finetune_weight,
         )
     
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):

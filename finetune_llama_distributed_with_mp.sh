@@ -3,13 +3,15 @@
 #source /tmp2/Megatron-LM/.venv/bin/activation
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
+export CUDA_VISIBLE_DEVICES=0
 
-GPUS_PER_NODE=2
+
+GPUS_PER_NODE=1
 MODEL_TYPE="13b" #"13b"
 # Change for multinode config
 MASTER_ADDR=eclab40902b # mgmt01
 MASTER_PORT=6000
-NNODES=1
+NNODES=2
 WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 HOSTNAME=$(hostname)
 TIME=$(date '+%Y-%m-%d_%H:%M')
@@ -39,25 +41,25 @@ PPdegree=2
 DPdegree=$(( WORLD_SIZE / TPdegree / PPdegree ))
 
 CHECKPOINT_PATH=llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
-DATA_PATH=/tmp2/Megatron-LM/dataset/llama-data_text_document #/tmp2/yuhu/dataset/my-gpt2_text_document
+DATA_PATH=/tmp2/Megatron-LM/dataset/llama-data_text_document
 RESULTS_PATH=/tmp2/Megatron-LM/results/$HOSTNAME/$TIME
 TOKENIZER_MODEL=/tmp2/Megatron-LM/llama-2-$MODEL_TYPE-hf/tokenizer.model
 
 TENSORBOARD_DIR="./logs/TP_${TPdegree}_PP_${PPdegree}_DP_${DPdegree}"
 FILENAME="TP_${TPdegree}_PP_${PPdegree}_DP_${DPdegree}"
 
-if [[ $HOSTNAME == "eclab3080" ]]; then
-    NODE_RANK=0
-elif [[ $HOSTNAME == mgmt01 ]]; then
-    NODE_RANK=3
-elif [[ $HOSTNAME == *40902 ]]; then
-    NODE_RANK=2
-elif [[ $HOSTNAME == *40902b ]]; then
-    NODE_RANK=1
-else
-    echo "Error, no such hostname '$HOSTNAME'"
-    exit
-fi
+# if [[ $HOSTNAME == "eclab3080" ]]; then
+#     NODE_RANK=0
+# elif [[ $HOSTNAME == mgmt01 ]]; then
+#     NODE_RANK=3
+# elif [[ $HOSTNAME == *40902 ]]; then
+#     NODE_RANK=2
+# elif [[ $HOSTNAME == *40902b ]]; then
+#     NODE_RANK=1
+# else
+#     echo "Error, no such hostname '$HOSTNAME'"
+#     exit
+# fi
 
 DISTRIBUTED_ARGS="
     --nproc_per_node $GPUS_PER_NODE \
@@ -65,8 +67,9 @@ DISTRIBUTED_ARGS="
     --rdzv_id 12345 \
     --rdzv_backend c10d \
     --rdzv_endpoint ${MASTER_ADDR}:${MASTER_PORT} \
-    --node-rank $NODE_RANK \
+    --local-rank 0 \
 "
+# --node-rank $NODE_RANK \
 
 GPT_ARGS="
     --tensor-model-parallel-size $TPdegree \
@@ -99,7 +102,9 @@ GPT_ARGS="
 	--attention-softmax-in-fp32 \
     --train-iters 100 \
 "
-
+    # --recompute-method uniform \
+    # --recompute-granularity full \
+    # --recompute-num-layers $(($LAYER_NUM / $PPdegree))
 #--num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree))
 
 LLAMA_ARGS="
@@ -116,7 +121,8 @@ NSYS_ARGS="
     --capture-range-end stop-shutdown \
     --trace=nvtx,cuda,cudnn \
     --backtrace=none \
-    --gpu-metrics-set 0
+    --gpu-metrics-set 0 \
+    --cuda-memory-usage true
 "
 
 PROF_ARGS="
@@ -146,6 +152,7 @@ LMS_ARGS="
     --lms-profile \
     --lms-swap \
     --lms-swap-policy dynamic-early \
+    
 "
 if [ -d $RESULTS_PATH ]; then
     mkdir -p $RESULTS_PATH

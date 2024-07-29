@@ -1414,18 +1414,14 @@ def forward_backward_pipelining_without_interleaving(
                     
                     timer = get_self_define_timer()
                     timer.push("send_backward_recv_forward")
-                # l = [torch.randn(256,1,1024).to(f"cuda:{torch.distributed.get_rank()}")]
-                # a = send_backward_recv_forward(
-                #     l, l[0].size(), config
-                # )
                 input_tensor = send_backward_recv_forward(
                     input_tensor_grad, recv_tensor_shapes, config
                 )
-                # input_tensor = torch.randn(recv_tensor_shapes,dtype=torch.float16).to(f"cuda:{torch.distributed.get_rank()}")
                 if config.profile:
                     torch.cuda.nvtx.range_pop()
                     timer.pop()
-
+            device = torch.cuda.current_device()
+            print(f"Max memory allocated on cuda:{device}: {torch.cuda.max_memory_allocated(device)/(1024**3)} GB")
     # Run cooldown backward passes.
     if not forward_only:
         for i in range(num_warmup_microbatches):

@@ -8,8 +8,6 @@ class ExecutionTimer:
         self.end_time = None
         self.events = [{},{},{},{}]
         self.tags = []
-        self.tmp = {}
-        self.rank = []
 
     def start(self):
         self.start_time = time.time()
@@ -32,24 +30,20 @@ class ExecutionTimer:
                 popped_tag, start_time = self.tags.pop()
                 now = time.time()
                 past_time = now - start_time
-                global_rank = torch.distributed.get_rank()
+                global_rank = torch.cuda.current_device()
                 
                 if self.events[global_rank].get(popped_tag) != None:
                     self.events[global_rank][popped_tag] += past_time
-                    self.tmp[popped_tag].append((start_time,now,past_time))
                 else:
                     self.events[global_rank][popped_tag] = past_time
-                    self.tmp[popped_tag] = [(start_time,now,past_time)]
             else:
                 print("No tags to pop")
 
     def _save_to_file(self, filepath):
         data = {
-            'rank': self.rank,
             'start_time': self.start_time,
             'end_time': self.end_time,
             'events': self.events,
-            'log': self.tmp
         }
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=4)

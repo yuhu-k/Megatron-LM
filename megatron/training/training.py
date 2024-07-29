@@ -24,6 +24,7 @@ from megatron.core.utils import check_param_hashes_across_dp_replicas, get_model
 from megatron.training.checkpointing import load_checkpoint
 from megatron.training.checkpointing import save_checkpoint
 from megatron.legacy.model import Float16Module
+#from megatron.core.transformer.module import Float16Module
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
@@ -196,22 +197,20 @@ def pretrain(train_valid_test_dataset_provider,
 
     args = get_args()
     timers = get_timers()
-    
-
-    if args.log_progress:
-        append_to_progress_log("Starting job")
-
-    # Set pytorch JIT layer fusion options and warmup JIT functions.
-    set_jit_fusion_options()
-
     lms.init_pack_hook(args.profile, args.lms, args.lms_swap_nonblocking)
     if args.lms:
-        rank = torch.distributed.get_rank()
+        rank = torch.cuda.current_device()
         ipc_object = lms.IpcObject()
         ipc_object.set_rank(rank)
         device = ipc_object.device
         lms.init(device, args, enable_multi_gpu=True, ipc_object=ipc_object, skip_sync_iterations=-1)
         torch.autograd.graph.saved_tensors_hooks(lms.get_pack_hook().my_pack_hook, lms.get_pack_hook().my_unpack_hook)
+    
+    if args.log_progress:
+        append_to_progress_log("Starting job")
+
+    # Set pytorch JIT layer fusion options and warmup JIT functions.
+    set_jit_fusion_options()
 
     # Adjust the startup time so it reflects the largest value.
     # This will be closer to what scheduler will see (outside of
@@ -240,7 +239,6 @@ def pretrain(train_valid_test_dataset_provider,
     timers('model-and-optimizer-setup', log_level=0).start(barrier=True)
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(
         model_provider, model_type)
-
     timers('model-and-optimizer-setup').stop()
     print_datetime('after model, optimizer, and learning rate '
                    'scheduler are built')
@@ -421,8 +419,9 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                  for model_module in model])), flush=True)
 
     # GPU allocation.
-    for model_module in model:
-        model_module.cuda(torch.cuda.current_device())
+    if not args.swap_weight:
+        for model_module in model:
+            model_module.cuda(torch.cuda.current_device())
 
     # Fp16 conversion.
     if args.fp16 or args.bf16:
@@ -591,6 +590,12 @@ def train_step(forward_step_func, data_iterator,
         torch.cuda.nvtx.range_pop()
         timer.pop()
     timers('optimizer').stop()
+
+            
+    allocated = torch.cuda.memory_allocated() / 1024**3
+    reserved = torch.cuda.memory_reserved() / 1024**3
+    print(f"Allocated GPU memory after opt update: {allocated:.2f} GB")
+    print(f"Reserved GPU memory after opt update: {reserved:.2f} GB")
 
     # Vision momentum.
     if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
@@ -1026,7 +1031,6 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         progress_bar = tqdm(total=args.train_iters, desc='finetuning...', unit='iteration')
     if args.profile:
         self_timer = get_self_define_timer()
-        self_timer.rank.append(torch.distributed.get_rank())
     while iteration < args.train_iters:
         if torch.distributed.get_rank() == 0:
             progress_bar.update(1)

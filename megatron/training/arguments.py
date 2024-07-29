@@ -152,7 +152,6 @@ def validate_args(args, defaults={}):
     # Load saved args from Retro (if applicable).
     load_retro_args(args)
     
-    print("sdfds",args.seq_length)
     # Tensor model parallel size.
     args.tensor_model_parallel_size = min(
         args.tensor_model_parallel_size, args.world_size)
@@ -394,10 +393,9 @@ def validate_args(args, defaults={}):
         args.encoder_seq_length = args.seq_length
     else:
         assert args.encoder_seq_length is not None
-        #args.seq_length = args.encoder_seq_length
+        args.seq_length = args.encoder_seq_length
 
     if args.seq_length is not None:
-        print(args.seq_length)
         assert args.max_position_embeddings >= args.seq_length
     if args.decoder_seq_length is not None:
         assert args.max_position_embeddings >= args.decoder_seq_length

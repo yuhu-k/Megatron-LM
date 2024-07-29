@@ -86,6 +86,7 @@ class MLP(MegatronModule):
                 skip_bias_add=True,
                 is_expert=is_expert,
                 tp_comm_buffer_name='fc1-1',
+                finetune_weight=False,
             )
             self.linear_fc1_2 = build_module(
                 submodules.linear_fc1,
@@ -98,6 +99,7 @@ class MLP(MegatronModule):
                 skip_bias_add=True,
                 is_expert=is_expert,
                 tp_comm_buffer_name='fc1-2',
+                finetune_weight=False,
             )
         else:
             self.linear_fc1 = build_module(
@@ -123,6 +125,7 @@ class MLP(MegatronModule):
             skip_bias_add=True,
             is_expert=is_expert,
             tp_comm_buffer_name='fc2',
+            finetune_weight=False,
         )
 
         self.activation_func = self.config.activation_func

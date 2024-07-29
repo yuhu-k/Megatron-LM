@@ -833,7 +833,7 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
                         .replace("post_attention_norm","mlp.pre_norm")\
                             .replace("query_key_value","linear_qkv")\
                                 .replace("dense_4h_to_h","linear_fc2")\
-                                    .replace("final_norm","final_layernorm")
+                                    .replace("final_norm","final_layernorm").replace("weight","weight.weight")
                 key = key.replace("dense","linear_proj")
 
                 real_m[key] = tmp
