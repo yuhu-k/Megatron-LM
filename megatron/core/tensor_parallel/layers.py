@@ -288,16 +288,23 @@ class LinearWithFrozenWeight(torch.autograd.Function):
         output = torch.matmul(input, weight.t())
         if bias is not None:
             output = output + bias
-        hook = get_pack_hook()
-        ctx.save_for_backward(*hook.my_pack_hook(weight))
+        # hook = get_pack_hook()
+        # ctx.save_for_backward(*hook.my_pack_hook(weight))
+        ctx.save_for_backward(weight.cpu())
         return output
 
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_output):
-        hook = get_pack_hook()
-        (weight,) = hook.my_unpack_hook(*ctx.saved_tensors)
+        # hook = get_pack_hook()
+        # (weight,) = hook.my_unpack_hook(*ctx.saved_tensors)
+        (weight,) = ctx.saved_tensors
+        weight = weight.to(torch.cuda.current_device())
+        grad_output = grad_output.to(dtype=torch.float32)
+        weight = weight.to(dtype=torch.float32)
         grad_input = grad_output.matmul(weight)
+        
+        print(1, grad_output, weight, grad_input, torch.matmul(grad_output, weight))
 
         if ctx.allreduce_dgrad:
             # All-reduce. Note: here async and sync are effectively the same.

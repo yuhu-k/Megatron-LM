@@ -25,6 +25,8 @@ from megatron.core.models.llama.llama_layer_specs import (
 import torch
 from typing import Union
 import megatron
+from swap_manager import init_weight_swapper
+import large_model_gpu as lms
 
 
 def model_provider(pre_process=True, post_process=True) -> Union[LLaMAModel, megatron.legacy.model.GPTModel]:
@@ -96,6 +98,9 @@ if __name__ == "__main__":
                                        'no_load_optim': True})
 
     args = get_args()
+    init_weight_swapper()
+    lms.init_pack_hook(True, False, False)
+    
     if args.num_layers_per_virtual_pipeline_stage is not None:
         print("Interleaved pipeline schedule is not yet supported for text generation.")
         exit()

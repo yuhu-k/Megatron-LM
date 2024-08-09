@@ -1,14 +1,17 @@
-import torch.distributed
-from megatron.core.transformer.custom_layers.transformer_engine import TELinear, _get_extra_te_kwargs
-from megatron.core import ModelParallelConfig
-from typing import Callable, Optional, List, OrderedDict
+from typing import Any, Callable, List, Mapping, Optional, OrderedDict
+from swap_manager import get_weight_swapper
 
 import torch
+import torch.distributed
 import transformer_engine as te
-from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
-from megatron.core import tensor_parallel
 from torch import Tensor
+
+from megatron.core import ModelParallelConfig, tensor_parallel
+from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
+from megatron.core.transformer.custom_layers.swap_weight_function import SwapTELinear
+from megatron.core.transformer.custom_layers.transformer_engine import _get_extra_te_kwargs
+from megatron.core.transformer.transformer_config import TransformerConfig
+
 
 def log_gpu_memory_usage():
     with open("/tmp2/yuhu/result.txt", "a") as f:
@@ -18,13 +21,15 @@ def log_gpu_memory_usage():
         f.write(f"Reserved GPU memory: {reserved:.2f} GB\n")
     
 
-def swap_weight_to_gpu(weight: Tensor, profile):
+def swap_weight_to_gpu(weight_id, profile):
     if profile:
         torch.cuda.nvtx.range_push(f"swap weight to cuda")
-    if "cuda" not in str(weight.device):
-        weight = weight.to(torch.cuda.current_device()).detach()
-    else:
-        weight = weight.detach()
+    # if "cuda" not in str(weight.device):
+    #     weight = weight.to(torch.cuda.current_device()).detach()
+    # else:
+    #     weight = weight.detach()
+    weight_swapper = get_weight_swapper()
+    weight = weight_swapper.get_weight(weight_id)
     if profile:
         torch.cuda.nvtx.range_pop()
     torch.cuda.empty_cache()
@@ -32,7 +37,70 @@ def swap_weight_to_gpu(weight: Tensor, profile):
         log_gpu_memory_usage()
     return weight
 
-class SwapWeightLinear(TELinear):
+class SwapWeightTemplate:
+    def init(self, weight_size, config, swap_weight=True, params_dtype=None):
+        self.swap_weight = swap_weight and config.swap_weight
+        self.config = config
+        
+        if self.swap_weight:
+            self.__delete_all_weight()
+            device = "cpu"
+            require_grad = False
+            if params_dtype == None:
+                params_dtype = self.params_dtype
+            self.register_parameter("weight", torch.nn.Parameter(torch.empty(weight_size, device=device, requires_grad=require_grad, dtype=params_dtype)))
+            self.profile = config.profile
+            
+            weight_swapper = get_weight_swapper()
+            self.swap_weight_id = weight_swapper.register(device=torch.cuda.current_device())
+            
+    def __delete_all_weight(self):
+        self._parameters.pop("weight")
+        self.weight = None
+        del self.weight
+        
+    def _set_weight(self, weight):
+        self.register_parameter("weight", torch.nn.Parameter(weight))
+        
+    def _load_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs, _load_from_state_dict_func):
+        result = _load_from_state_dict_func(state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs)
+        if self.swap_weight:
+            weight_swapper = get_weight_swapper()
+            weight_swapper.update_weight(self.weight, self.swap_weight_id)
+            self.__delete_all_weight()
+            self._set_weight(weight_swapper.get_weight_cpu(self.swap_weight_id))
+            self.requires_grad_(False)
+        return result
+    
+    def _forward(self, inp, forward_function, weight=None, weight_id=None):
+        if weight_id != None:
+            output = forward_function(inp, None, weight_id)
+        else:
+            w_id = weight
+            weight = self.get_weight(w_id) if self.swap_weight else weight
+            if weight != None:
+                output = forward_function(inp, weight)
+            else:
+                output = forward_function(inp)
+            
+        if weight_id is not None or self.swap_weight:
+            swapper = get_weight_swapper()
+            swapper.offload_weight(weight_id if weight_id is not None else w_id if w_id is not None else self.swap_weight_id)
+            
+        return output
+        
+    def get_weight(self, weight_id=None):
+        if weight_id == None:
+            weight_id = self.swap_weight_id
+        #log_gpu_memory_usage()
+        weight = swap_weight_to_gpu(weight_id, self.profile)
+        return weight
+
+    
+
+class SwapWeightLinear(SwapTELinear, SwapWeightTemplate):
     def __init__(
         self,
         input_size: int,
@@ -58,32 +126,25 @@ class SwapWeightLinear(TELinear):
             skip_weight_param_allocation=skip_weight_param_allocation,
             tp_comm_buffer_name=tp_comm_buffer_name,
         )
-        self._parameters = OrderedDict()
-        self.weight = None
-        del self.weight
+        SwapWeightTemplate.init(self, (self.out_features, self.in_features), config, swap_weight)
         self.weight_tensor = None
-        self.swap_weight = swap_weight
-        self.config = config
-        if swap_weight and config.swap_weight:
-            device = "cpu"
-            require_grad = False
-        else:
-            device = torch.cuda.current_device()
-            require_grad = True
-        self.register_parameter("weight", torch.nn.Parameter(torch.empty((self.out_features, self.in_features), device=device, requires_grad=require_grad, dtype=self.params_dtype)))
-    
-    def forward(self, inp: torch.Tensor):
         
-        log_gpu_memory_usage()
-        if self.swap_weight and self.config.swap_weight:
-            weight = swap_weight_to_gpu(self.weight.data, self.config.profile)
-            output = super().forward(inp, weight)
-            del weight
-        else:
-            output = super().forward(inp)
-        return output
+    def __delete_all_weight(self):
+        SwapWeightTemplate.__delete_all_weight(self)
+        self.weight_tensor = None
+        
+    def forward(self, inp: torch.Tensor):
+        return SwapWeightTemplate._forward(self, inp, super().forward, weight_id=self.swap_weight_id if self.swap_weight else None)
+
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
+        return SwapWeightTemplate._load_state_dict(self, state_dict, strict, assign)
+    
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        return SwapWeightTemplate._load_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs, super()._load_from_state_dict)
             
-class SwapWeightLayerNorm(te.pytorch.LayerNorm):
+class SwapWeightLayerNorm(te.pytorch.LayerNorm, SwapWeightTemplate):
     def __init__(
         self,
         hidden_size: int,
@@ -100,29 +161,20 @@ class SwapWeightLayerNorm(te.pytorch.LayerNorm):
             params_dtype=params_dtype,
             zero_centered_gamma=zero_centered_gamma,
         )
-        self._parameters = OrderedDict()
-        self.weight = None
-        self.config = config
-        del self.weight
-        if config.swap_weight:
-            device = "cpu"
-        else:
-            device = torch.cuda.current_device()
-        self.weight = torch.nn.Parameter(torch.empty(hidden_size, device=device, requires_grad=False, dtype=params_dtype))
+        SwapWeightTemplate.init(self, hidden_size, config, params_dtype=params_dtype)
     
     def forward(self, inp: torch.Tensor):
-        
-        log_gpu_memory_usage()
-        if self.config.swap_weight:
-            weight = swap_weight_to_gpu(self.weight.data, self.config.profile)
-            output = super().forward(inp, weight)
-            del weight
-        else:
-            output = super().forward(inp)
+        return SwapWeightTemplate._forward(self, inp, super().forward)
 
-        return output
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
+        return SwapWeightTemplate._load_state_dict(state_dict, strict, assign)
+    
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        return SwapWeightTemplate._load_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs, super()._load_from_state_dict)
             
-class SwapWeightRMSNorm(te.pytorch.RMSNorm):
+class SwapWeightRMSNorm(te.pytorch.RMSNorm, SwapWeightTemplate):
     def __init__(
         self,
         hidden_size: int,
@@ -139,27 +191,18 @@ class SwapWeightRMSNorm(te.pytorch.RMSNorm):
             params_dtype=params_dtype,
             zero_centered_gamma=zero_centered_gamma,
         )
-        self._parameters = OrderedDict()
-        self.weight = None
-        self.config = config
-        del self.weight
-        if config.swap_weight:
-            device = "cpu"
-        else:
-            device = torch.cuda.current_device()
-        self.weight = torch.nn.Parameter(torch.empty(hidden_size, device=device, requires_grad=False, dtype=params_dtype))
-    
-    def forward(self, inp: torch.Tensor):
+        SwapWeightTemplate.init(self, hidden_size, config, params_dtype=params_dtype)
         
-        log_gpu_memory_usage()
-        if self.config.swap_weight:
-            weight = swap_weight_to_gpu(self.weight.data, self.config.profile)
-            output = super().forward(inp, weight)
-            del weight
-        else:
-            output = super().forward(inp)
-
-        return output
+    def forward(self, inp: torch.Tensor):
+        return SwapWeightTemplate._forward(self, inp, super().forward)
+    
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
+        return SwapWeightTemplate._load_state_dict(state_dict, strict, assign)
+    
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        return SwapWeightTemplate._load_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs, super()._load_from_state_dict)
     
             
 class SwapWeightNorm:
@@ -198,7 +241,7 @@ class SwapWeightNorm:
 
         return instance
     
-class SwapWeightVocabParallelEmbedding(VocabParallelEmbedding):
+class SwapWeightVocabParallelEmbedding(VocabParallelEmbedding, SwapWeightTemplate):
     def __init__(
         self,
         num_embeddings: int,
@@ -213,29 +256,20 @@ class SwapWeightVocabParallelEmbedding(VocabParallelEmbedding):
                          init_method=init_method,
                          reduce_scatter_embeddings=reduce_scatter_embeddings,
                          config=config)
-        self._parameters = OrderedDict()
-        self.weight = None
-        self.config = config
-        del self.weight
-        if config.swap_weight:
-            device = "cpu"
-        else:
-            device = torch.cuda.current_device()
-        self.weight = torch.nn.Parameter(torch.empty(self.num_embeddings_per_partition, self.embedding_dim, device=device, requires_grad=False, dtype=config.params_dtype))
-    
+        SwapWeightTemplate.init(self, (self.num_embeddings_per_partition, self.embedding_dim), config, params_dtype=config.params_dtype)
+        
     def forward(self, inp: torch.Tensor):
+        return SwapWeightTemplate._forward(self, inp, super().forward)
+    
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
+        return SwapWeightTemplate._load_state_dict(self, state_dict, strict, assign)
+    
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        return SwapWeightTemplate._load_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs, super()._load_from_state_dict)
         
-        log_gpu_memory_usage()
-        if self.config.swap_weight:
-            weight = swap_weight_to_gpu(self.weight.data, self.config.profile)
-            output = super().forward(inp, weight)
-            del weight
-        else:
-            output = super().forward(inp)
-
-        return output
-        
-class SwapTPColumnParallelLinear(tensor_parallel.ColumnParallelLinear):
+class SwapTPColumnParallelLinear(tensor_parallel.ColumnParallelLinear, SwapWeightTemplate):
     def __init__(
         self,
         input_size,
@@ -272,32 +306,24 @@ class SwapTPColumnParallelLinear(tensor_parallel.ColumnParallelLinear):
             tp_comm_buffer_name=tp_comm_buffer_name,
             disable_grad_reduce=disable_grad_reduce,
         )
-        self._parameters.pop("weight")
-        self.weight = None
-        self.config = config
-        del self.weight
-        if config.swap_weight:
-            device = "cpu"
-        else:
-            device = torch.cuda.current_device()
-        self.weight = torch.nn.Parameter(torch.empty(self.output_size_per_partition, self.input_size, device=device, requires_grad=False, dtype=config.params_dtype))
-    
+        SwapWeightTemplate.init(self, (self.output_size_per_partition, self.input_size), config, params_dtype=config.params_dtype)
+        
     def forward(self, inp: torch.Tensor, weight=None):
         
-        if weight is None:
-            if self.weight is None:
-                raise RuntimeError(
-                    "weight was not supplied to ColumnParallelLinear forward pass "
-                    "and skip_weight_param_allocation is True."
-                )
-            weight = self.weight
-
-        
-        log_gpu_memory_usage()
         if self.config.swap_weight:
-            weight = swap_weight_to_gpu(weight, self.config.profile)
+            if weight is None:
+                if self.swap_weight_id is None:
+                    raise RuntimeError(
+                        "weight was not supplied to ColumnParallelLinear forward pass "
+                        "and skip_weight_param_allocation is True."
+                    )
 
-        output = super().forward(inp, weight)
-        del weight
-
-        return output
+        return SwapWeightTemplate._forward(self, inp, super().forward, weight)
+    
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
+        return SwapWeightTemplate._load_state_dict(self, state_dict, strict, assign)
+    
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        return SwapWeightTemplate._load_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs, super()._load_from_state_dict)

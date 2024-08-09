@@ -143,6 +143,7 @@ def main():
     saver_proc = mp.Process(target=saver.save_checkpoint, args=(queue, args))
     saver_proc.start()
 
+    print(args)
     print("Starting loader...")
     loader.load_checkpoint(queue, args)
 

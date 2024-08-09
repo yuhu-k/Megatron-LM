@@ -11,7 +11,7 @@ MODEL_TYPE="13b" #"13b"
 # Change for multinode config
 MASTER_ADDR=eclab40902b # mgmt01
 MASTER_PORT=6000
-NNODES=2
+NNODES=1
 WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 HOSTNAME=$(hostname)
 TIME=$(date '+%Y-%m-%d_%H:%M')
@@ -28,6 +28,9 @@ if [[ $MODEL_TYPE == 7b* ]]; then
 elif [[ $MODEL_TYPE == 13b* ]]; then
     # TPdegree=2
     LAYER_NUM=40
+elif [[ $MODEL_TYPE == 34b* ]]; then
+    # TPdegree=4
+    LAYER_NUM=48
 elif [[ $MODEL_TYPE == 70b* ]]; then
     # TPdegree=8
     LAYER_NUM=40
@@ -37,13 +40,13 @@ else
 fi
 
 TPdegree=1
-PPdegree=2
+PPdegree=1
 DPdegree=$(( WORLD_SIZE / TPdegree / PPdegree ))
 
 CHECKPOINT_PATH=llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
 DATA_PATH=/tmp2/Megatron-LM/dataset/llama-data_text_document
 RESULTS_PATH=/tmp2/Megatron-LM/results/$HOSTNAME/$TIME
-TOKENIZER_MODEL=/tmp2/Megatron-LM/llama-2-$MODEL_TYPE-hf/tokenizer.model
+TOKENIZER_MODEL=/tmp2/Megatron-LM/tokenizer.model
 
 TENSORBOARD_DIR="./logs/TP_${TPdegree}_PP_${PPdegree}_DP_${DPdegree}"
 FILENAME="TP_${TPdegree}_PP_${PPdegree}_DP_${DPdegree}"
@@ -78,7 +81,7 @@ GPT_ARGS="
     --max-position-embeddings 1024 \
     --tokenizer-type Llama2Tokenizer \
     --tokenizer-model ${TOKENIZER_MODEL} \
-    --micro-batch-size 1 \
+    --micro-batch-size 4 \
     --global-batch-size 4 \
     --lr 0.00015 \
     --train-iters 100 \
@@ -102,9 +105,9 @@ GPT_ARGS="
 	--attention-softmax-in-fp32 \
     --train-iters 100 \
 "
-    # --recompute-method uniform \
-    # --recompute-granularity full \
-    # --recompute-num-layers $(($LAYER_NUM / $PPdegree))
+# --recompute-method uniform \
+#     --recompute-granularity full \
+#     --recompute-num-layers $(($LAYER_NUM / $PPdegree))
 #--num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree))
 
 LLAMA_ARGS="
@@ -152,7 +155,6 @@ LMS_ARGS="
     --lms-profile \
     --lms-swap \
     --lms-swap-policy dynamic-early \
-    
 "
 if [ -d $RESULTS_PATH ]; then
     mkdir -p $RESULTS_PATH
@@ -168,9 +170,6 @@ echo "nsys profile $NSYS_ARGS \
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \
     $PROF_ARGS \
-    --recompute-method uniform \
-    --recompute-granularity full \
-    --recompute-num-layers $(($LAYER_NUM / $PPdegree))
 "
 
 nsys profile $NSYS_ARGS \
@@ -184,6 +183,6 @@ torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \
     $PROF_ARGS \
+    --swap-weight \
     $LMS_ARGS \
-    --swap-weight
-    
+

@@ -13,13 +13,28 @@ import shutil
 from tqdm import tqdm
 import types
 
+NUM_SHARDS = {
+    "llama2-7B": 1,
+    "llama2-7Bf": 1,
+    "llama2-13B": 2,
+    "llama2-13Bf": 2,
+    "llama2-70B": 8,
+    "llama2-70Bf": 8,
+    "llama3-8B": 1,
+    "llama3-8Bf": 1,
+    "llama3-70B": 8,
+    "llama3-70Bf": 8,
+    "mistral-7B": 1,
+    "mistral-7Bf": 1,
+    "code-llama-34B": 4,
+}
 
 def add_arguments(parser):
     group = parser.add_argument_group(title='Llama/Mistral loader.')
 
     # TODO(jbarker): Need assertion to make sure *exactly* one of these is used
     parser.add_argument('--model-size', type=str, required=True,
-                        choices=['llama2-7B', 'llama2-13B', 'llama2-70B', 'llama2-7Bf', 'llama2-13Bf', 'llama2-70Bf', 'llama3-8B', 'llama3-70B', 'llama3-8Bf', 'llama3-70Bf', 'mistral-7B', 'mistral-7Bf'],
+                        choices=NUM_SHARDS.keys(),
                         help='Model size can be `llama2-7B`, `llama2-13B`, `llama2-70B`, `llama3-8B`, `llama3-70B`, `mistral-7B` (for pretrained models), '
                         'and `llama2-7Bf`, `llama2-13Bf`, `llama2-70Bf`, `llama3-8Bf`, `llama3-70bf` and `mistral-7Bf` (for chat-finetuned models).')
     parser.add_argument('--checkpoint-type', type=str, required=True,
@@ -45,20 +60,7 @@ def verify_transformers_version():
     assert major >= 4 and minor >= 31
 
 
-NUM_SHARDS = {
-    "llama2-7B": 1,
-    "llama2-7Bf": 1,
-    "llama2-13B": 2,
-    "llama2-13Bf": 2,
-    "llama2-70B": 8,
-    "llama2-70Bf": 8,
-    "llama3-8B": 1,
-    "llama3-8Bf": 1,
-    "llama3-70B": 8,
-    "llama3-70Bf": 8,
-    "mistral-7B": 1,
-    "mistral-7Bf": 1,
-}
+
 
 
 def compute_intermediate_size(n, ffn_dim_multiplier=1, multiple_of=256):
@@ -79,7 +81,7 @@ def write_json(text, path):
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/convert_llama_weights_to_hf.py
 def convert_to_hf(model_path, input_base_path, model_size, tokenizer_path):
 
-    if "llama2" in model_size:
+    if "llama2" in model_size or "code-llama" in model_size:
         from transformers import LlamaConfig as ModelConfig
         from transformers import  LlamaTokenizer, LlamaTokenizerFast
     elif "llama3" in model_size:
@@ -113,7 +115,7 @@ def convert_to_hf(model_path, input_base_path, model_size, tokenizer_path):
     else:
         max_position_embeddings = 4096 if "mistral" in model_size else 2048
 
-    if "llama2" in model_size:
+    if "llama2" in model_size or "code-llama" in model_size:
         tokenizer_class = LlamaTokenizer if LlamaTokenizerFast is None else LlamaTokenizerFast
     elif "llama3" in model_size:
         try:
@@ -128,7 +130,7 @@ def convert_to_hf(model_path, input_base_path, model_size, tokenizer_path):
     if tokenizer_path is not None:
         if "llama" in model_size:
             tokenizer = tokenizer_class(tokenizer_path)
-            if "llama2" in model_size:
+            if "llama2" in model_size or "code-llama" in model_size:
                 tokenizer.save_pretrained(model_path)
             vocab_size = tokenizer.vocab_size if tokenizer_path is not None else 32000
         elif "mistral" in model_size:
@@ -170,7 +172,7 @@ def convert_to_hf(model_path, input_base_path, model_size, tokenizer_path):
             # Unsharded
             q_proj = loaded[f"layers.{layer_i}.attention.wq.weight"]
             k_proj = loaded[f"layers.{layer_i}.attention.wk.weight"]
-            if ("llama2" in model_size) or ("mistral" in model_size):
+            if ("llama2" in model_size) or ("code-llama" in model_size) or ("mistral" in model_size):
                 q_proj = permute(q_proj)
                 k_proj = permute(k_proj)
             state_dict = {
@@ -417,7 +419,6 @@ def load_checkpoint_to_model(args):
 
 
 def _load_checkpoint(queue, args):
-
     verify_transformers_version()
 
     # Search in directory above this.
@@ -462,10 +463,14 @@ def _load_checkpoint(queue, args):
                 ]
 
     margs = parse_args()
-    margs.tokenizer_model = args.tokenizer_model
-    load_args_from_checkpoint(margs)
 
-    if "llama2" in args.model_size:
+    print(1,getattr(margs,"seq_length",None))
+    margs.tokenizer_model = args.tokenizer_model
+    print(2,getattr(margs,"seq_length",None))
+    load_args_from_checkpoint(margs)
+    print(3,getattr(margs,"seq_length",None))
+
+    if "llama2" in args.model_size or "code-llama" in args.model_size:
         margs.tokenizer_type = "Llama2Tokenizer"
     elif "llama3" in args.model_size:
         margs.tokenizer_type = "Llama3Tokenizer"
@@ -476,6 +481,7 @@ def _load_checkpoint(queue, args):
     # so trick it into thinking we are plenty of processes.
     margs.world_size = margs.tensor_model_parallel_size * margs.pipeline_model_parallel_size
 
+    print(margs.max_position_embeddings,margs.seq_length)
     margs = validate_args(margs)
 
     margs.use_legacy_models = True

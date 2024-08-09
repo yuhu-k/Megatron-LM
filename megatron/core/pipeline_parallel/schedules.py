@@ -1420,8 +1420,7 @@ def forward_backward_pipelining_without_interleaving(
                 if config.profile:
                     torch.cuda.nvtx.range_pop()
                     timer.pop()
-            device = torch.cuda.current_device()
-            print(f"Max memory allocated on cuda:{device}: {torch.cuda.max_memory_allocated(device)/(1024**3)} GB")
+            
     # Run cooldown backward passes.
     if not forward_only:
         for i in range(num_warmup_microbatches):

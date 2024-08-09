@@ -9,6 +9,7 @@ from megatron.core.transformer.custom_layers.transformer_engine import (
     TELayerNormColumnParallelLinear,
     TERowParallelLinear,
     TEColumnParallelLinear,
+    TENorm
 )
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
@@ -52,16 +53,16 @@ def get_llama_layer_with_transformer_engine_spec(
 
 # Helper function to get module spec for MLP/MoE
 def _get_mlp_module_spec(
-    use_te: bool = True, num_experts: int = None, moe_grouped_gemm: bool = False
+    use_te: bool = True, num_experts: int = None, moe_grouped_gemm: bool = False, finetune: bool = False
 ) -> ModuleSpec:
     if num_experts is None:
         # Dense MLP w/ or w/o TE modules.
         return ModuleSpec(
             module=MLP,
             submodules=MLPSubmodules(
-                linear_fc1=LoRAColumnParallelLinear if use_te else ColumnParallelLinear,
-                linear_fc2=LoRARowParallelLinear if use_te else RowParallelLinear,
-                pre_norm=SwapWeightNorm if use_te else IdentityOp,
+                linear_fc1=LoRAColumnParallelLinear if finetune else TEColumnParallelLinear if use_te else ColumnParallelLinear,
+                linear_fc2=LoRARowParallelLinear if finetune else TERowParallelLinear if use_te else RowParallelLinear,
+                pre_norm=SwapWeightNorm if finetune else TENorm if use_te else IdentityOp,
             ),
         )
     else:

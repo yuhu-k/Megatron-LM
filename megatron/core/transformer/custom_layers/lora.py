@@ -62,6 +62,7 @@ class LoRALinear(MegatronModule):
             skip_weight_param_allocation=skip_weight_param_allocation,
             tp_comm_buffer_name=tp_comm_buffer_name,
         )
+        self.weight.requires_grad_(False)
         self.rank = config.finetune_lora_rank
         self.alpha = config.finetune_lora_alpha
         self.finetune_weight = finetune_weight
@@ -72,38 +73,61 @@ class LoRALinear(MegatronModule):
                 input_size = int(input_size / config.tensor_model_parallel_size)
             self.rank = int(self.rank / config.tensor_model_parallel_size)
         
-        if finetune_weight:
-            self.lora_a = SwapWeightLinear(
-                    input_size=input_size,
-                    output_size=self.rank,
-                    parallel_mode="column",
-                    config=config,
-                    init_method=config.init_method,
-                    bias=bias,
-                    skip_bias_add=skip_bias_add,
-                    skip_weight_param_allocation=skip_weight_param_allocation,
-                    tp_comm_buffer_name=tp_comm_buffer_name,
-                    swap_weight=False
-                )
-            self.lora_b = SwapWeightLinear(
-                input_size=self.rank,
-                output_size=output_size,
-                parallel_mode="row",
-                config=config,
-                init_method=init_method,
-                bias=bias,
-                skip_bias_add=skip_bias_add,
-                skip_weight_param_allocation=False,
-                tp_comm_buffer_name=tp_comm_buffer_name,
-                swap_weight=False
-            )
+        # if finetune_weight:
+        #     # self.lora_a = SwapWeightLinear(
+        #     #         input_size=input_size,
+        #     #         output_size=self.rank,
+        #     #         parallel_mode="column",
+        #     #         config=config,
+        #     #         init_method=config.init_method,
+        #     #         bias=bias,
+        #     #         skip_bias_add=skip_bias_add,
+        #     #         skip_weight_param_allocation=skip_weight_param_allocation,
+        #     #         tp_comm_buffer_name=tp_comm_buffer_name,
+        #     #         swap_weight=False
+        #     #     )
+        #     # self.lora_b = SwapWeightLinear(
+        #     #     input_size=self.rank,
+        #     #     output_size=output_size,
+        #     #     parallel_mode="row",
+        #     #     config=config,
+        #     #     init_method=init_method,
+        #     #     bias=bias,
+        #     #     skip_bias_add=skip_bias_add,
+        #     #     skip_weight_param_allocation=False,
+        #     #     tp_comm_buffer_name=tp_comm_buffer_name,
+        #     #     swap_weight=False
+        #     # )
+        #     self.lora_a = TEColumnParallelLinear(
+        #         input_size=input_size,
+        #         output_size=self.rank,
+        #         config=config,
+        #         init_method=config.init_method,
+        #         bias=bias,
+        #         gather_output=False,
+        #         skip_bias_add=skip_bias_add,
+        #         is_expert=False,
+        #         tp_comm_buffer_name=tp_comm_buffer_name
+        #     )
+        #     self.lora_b = TERowParallelLinear(
+        #         input_size=self.rank,
+        #         output_size=output_size,
+        #         config=config,
+        #         init_method=init_method,
+        #         bias=bias,
+        #         input_is_parallel=True,
+        #         skip_bias_add=skip_bias_add,
+        #         is_expert=False,
+        #         tp_comm_buffer_name=tp_comm_buffer_name
+        #     )
+            
         
     
     def forward(self, x):
         out = self.weight(x)[0]
-        if self.finetune_weight:
-            lora_out = (self.alpha / self.rank) * self.lora_b(self.lora_a(x)[0])[0]
-            out = out + lora_out
+        # if self.finetune_weight:
+        #     lora_out = (self.alpha / self.rank) * self.lora_b(self.lora_a(x)[0])[0]
+        #     out = out + lora_out
         return out, None
 
 class LoRAColumnParallelLinear(LoRALinear):

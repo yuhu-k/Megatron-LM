@@ -116,6 +116,19 @@ class LLaMAModel(LanguageModule):
             else:
                 self.embedding_activation_buffer = None
                 self.grad_output_buffer = None
+                from megatron.core.transformer.custom_layers.transformer_engine import TEColumnParallelLinear
+                
+            # self.test_layer = TEColumnParallelLinear(
+            #         config.hidden_size,
+            #         config.hidden_size,
+            #         config=config,
+            #         init_method=config.init_method,
+            #         gather_output=False,
+            #         bias=False,
+            #         skip_bias_add=True,
+            #         is_expert=False,
+            #         tp_comm_buffer_name="test_layer"
+            #     )
 
             if config.swap_weight:
                 from megatron.core.transformer.custom_layers.swap_weight_layer import SwapTPColumnParallelLinear
@@ -148,6 +161,7 @@ class LLaMAModel(LanguageModule):
                 )
 
         else:
+            self.test_layer = None
             self.output_layer = None
 
         if self.pre_process or self.post_process:
@@ -155,7 +169,7 @@ class LLaMAModel(LanguageModule):
         
         if config.finetune_method == "lora":
             for name, param in self.named_parameters():
-                if 'lora' not in name:
+                if 'lora' not in name and 'test' not in name:
                     param.requires_grad = False 
 
     def set_input_tensor(self, input_tensor: Tensor) -> None:
@@ -238,6 +252,7 @@ class LLaMAModel(LanguageModule):
         output_weight = None
         if self.share_embeddings_and_output_weights:
             output_weight = self.shared_embedding_or_output_weight()
+        # hidden_states, _ = self.test_layer(hidden_states)
         if self.config.profile:
             torch.cuda.nvtx.range_push("output layer")
         logits, _ = self.output_layer(hidden_states, weight=output_weight)

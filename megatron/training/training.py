@@ -62,6 +62,7 @@ from .global_vars import (
 
 # 0513 integrate lms to megatron lm
 import large_model_gpu as lms
+from swap_manager import init_weight_swapper
 
 stimer = StragglerDetector()
 
@@ -197,14 +198,16 @@ def pretrain(train_valid_test_dataset_provider,
 
     args = get_args()
     timers = get_timers()
-    lms.init_pack_hook(args.profile, args.lms, args.lms_swap_nonblocking)
     if args.lms:
         rank = torch.cuda.current_device()
         ipc_object = lms.IpcObject()
         ipc_object.set_rank(rank)
         device = ipc_object.device
         lms.init(device, args, enable_multi_gpu=True, ipc_object=ipc_object, skip_sync_iterations=-1)
-        torch.autograd.graph.saved_tensors_hooks(lms.get_pack_hook().my_pack_hook, lms.get_pack_hook().my_unpack_hook)
+    lms.init_pack_hook(args.profile, args.lms, args.lms_swap_nonblocking)
+        
+    if args.swap_weight:
+        init_weight_swapper()
     
     if args.log_progress:
         append_to_progress_log("Starting job")
@@ -572,11 +575,16 @@ def train_step(forward_step_func, data_iterator,
     # Empty unused memory.
     if args.empty_unused_memory_level >= 1:
         torch.cuda.empty_cache()
+    
 
     # Vision gradients.
     if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
+        
+    for name, param in model[0].named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {param.data} {param.grad}")
 
     # Update parameters.
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
@@ -590,8 +598,11 @@ def train_step(forward_step_func, data_iterator,
         torch.cuda.nvtx.range_pop()
         timer.pop()
     timers('optimizer').stop()
+    
 
-            
+
+        
+    torch.cuda.empty_cache()
     allocated = torch.cuda.memory_allocated() / 1024**3
     reserved = torch.cuda.memory_reserved() / 1024**3
     print(f"Allocated GPU memory after opt update: {allocated:.2f} GB")
@@ -1032,6 +1043,8 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
     if args.profile:
         self_timer = get_self_define_timer()
     while iteration < args.train_iters:
+        device = torch.cuda.current_device()
+        print(f"Max memory allocated on cuda:{device}: {torch.cuda.max_memory_allocated(device)/(1024**3)} GB")
         if torch.distributed.get_rank() == 0:
             progress_bar.update(1)
         if args.profile and \
@@ -1040,7 +1053,6 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             torch.cuda.cudart().cudaProfilerStart()
             torch.autograd.profiler.emit_nvtx(record_shapes=True).__enter__()
             self_timer.start()
-
         maybe_finalize_async_save(False)
 
         # Update number of microbatches first without consistency check to decide if a
@@ -1207,6 +1219,10 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         if args.manual_gc:
             if args.manual_gc_interval != 0 and iteration % args.manual_gc_interval == 0:
                 gc.collect()
+        
+        from swap_manager import get_weight_swapper
+        swapper = get_weight_swapper()
+        swapper.finish_warmup()
     progress_bar.close()
     track_e2e_metrics()
 

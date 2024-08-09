@@ -114,10 +114,16 @@ class LanguageModule(MegatronModule):
         Returns:
             Tensor: During pre processing it returns the input embeddings weight while during post processing it returns the final output layers weight
         """
-        if self.pre_process:
-            return self.embedding.word_embeddings.weight
-        elif self.post_process:
-            return self.output_layer.weight
+        if self.config.swap_weight:
+            if self.pre_process:
+                return self.embedding.word_embeddings.weight_id
+            elif self.post_process:
+                return self.output_layer.weight_id
+        else:
+            if self.pre_process:
+                return self.embedding.word_embeddings.weight
+            elif self.post_process:
+                return self.output_layer.weight
         return None
 
     def sharded_state_dict(

@@ -394,16 +394,15 @@ def main():
             output_bin_files[key],
             dtype=indexed_dataset.DType.optimal_dtype(tokenizer.vocab_size),
         )
-
         for name in in_ss_out_names:
             parition_output_prefix = name['output_prefix']
             full_partition_output_prefix = "{}_{}_{}".format(parition_output_prefix,
                                                              key, level)
             builders[key].add_index(full_partition_output_prefix)
         builders[key].finalize(output_idx_files[key])
+        
 
 
 if __name__ == '__main__':
 
     main()
-
