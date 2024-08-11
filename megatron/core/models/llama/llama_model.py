@@ -90,6 +90,15 @@ class LLaMAModel(LanguageModule):
                 seq_len_interpolation_factor=seq_len_interpolation_factor,
                 rotary_base=rotary_base,
             )
+            # from transformers.models.llama.configuration_llama import LlamaConfig
+            # import json
+            # with open(f"/tmp2/Megatron-LM/llama-2-{config.llama_size}-hf/config.json", "r") as file:
+            #     data = json.load(file)
+            #     llamaconfig = LlamaConfig(**data)
+            # from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
+            # self.rotary_pos_emb = LlamaRotaryEmbedding(
+            #     config=llamaconfig
+            # )
 
         # Transformer.
         self.decoder = TransformerBlock(
@@ -98,8 +107,6 @@ class LLaMAModel(LanguageModule):
             pre_process=self.pre_process,
             post_process=self.post_process,
         )
-        # for name, param in self.decoder.named_parameters():
-        #     print(name)
 
         # Output
         if post_process:
@@ -258,14 +265,12 @@ class LLaMAModel(LanguageModule):
         logits, _ = self.output_layer(hidden_states, weight=output_weight)
         if self.config.profile:
             torch.cuda.nvtx.range_pop()
-        
         if self.embedding_activation_buffer != None:
             for embedding_activation in self.embedding_activation_buffer:
                 print(embedding_activation.size())
         if self.grad_output_buffer is not None:
             for grad_output in self.grad_output_buffer:
                 print(grad_output.size())
-
         if labels is None:
             # [s b h] => [b s h]
             return logits.transpose(0, 1).contiguous()

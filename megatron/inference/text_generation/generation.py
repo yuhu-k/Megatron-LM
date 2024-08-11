@@ -199,6 +199,9 @@ def generate_tokens_probs_and_return_on_first_stage(
 
                 # Sample.
                 last_token_logits = logits[:, -1, :]
+                top_k = 10
+                top_p = 0.9
+                temperature = 0.6
                 new_sample = sample(last_token_logits,
                                     top_k=top_k,
                                     top_p=top_p,

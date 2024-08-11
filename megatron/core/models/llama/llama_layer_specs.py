@@ -26,10 +26,10 @@ from megatron.core.transformer.custom_layers.lora import (
 from megatron.core.transformer.custom_layers.swap_weight_layer import SwapWeightNorm
 # Use this spec to use lower level Transformer Engine modules (required for fp8 training)
 def get_llama_layer_with_transformer_engine_spec(
-    num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
+    num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False, lora = False
 ) -> ModuleSpec:
     mlp = _get_mlp_module_spec(
-        use_te=True, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm
+        use_te=True, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm, finetune=lora
     )
     return ModuleSpec(
         module=TransformerLayer,
@@ -42,10 +42,16 @@ def get_llama_layer_with_transformer_engine_spec(
                     linear_qkv=LoRAColumnParallelLinear,
                     core_attention=TEDotProductAttention,
                     linear_proj=LoRARowParallelLinear,
-                ) ,
+                ) if lora 
+                else SelfAttentionSubmodules(
+                    qkv_layernorm=TENorm,
+                    linear_qkv=TEColumnParallelLinear,
+                    core_attention=TEDotProductAttention,
+                    linear_proj=TERowParallelLinear,
+                ),
             ),
             self_attn_bda=get_bias_dropout_add,
-            pre_mlp_layernorm=SwapWeightNorm if num_experts else IdentityOp,
+            pre_mlp_layernorm=SwapWeightNorm if lora else TENorm if num_experts else IdentityOp,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
         ),

@@ -63,7 +63,7 @@ class Attention(MegatronModule, ABC):
         attention_type: str,
     ):
         super().__init__(config=config)
-
+        self.aaa = 0
         self.config = config
         self.layer_number = layer_number
         self.attn_mask_type = attn_mask_type
@@ -132,6 +132,7 @@ class Attention(MegatronModule, ABC):
                 attention_mask,
                 attn_mask_type=attn_mask_type,
                 packed_seq_params=packed_seq_params,
+                dot_func=self.aaa != 0
             )
             return output_
 
@@ -257,6 +258,8 @@ class Attention(MegatronModule, ABC):
             from megatron.training.global_vars import get_self_define_timer
             timer = get_self_define_timer()
             timer.push("attention")
+            
+        sq, b, _ = hidden_states.size()
 
         # For self attention we just duplicate the rotary_pos_emb if it isn't already
         if rotary_pos_emb is not None and not isinstance(rotary_pos_emb, tuple):
@@ -268,7 +271,6 @@ class Attention(MegatronModule, ABC):
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
         query, key, value = self.get_query_key_value_tensors(hidden_states, key_value_states)
-
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference
         # ===================================================
@@ -303,7 +305,6 @@ class Attention(MegatronModule, ABC):
             # absolute positional embedding.
             # otherwise, only relative positional embedding takes effect
             # value_layer = apply_rotary_pos_emb(value_layer, k_pos_emb)
-
         # ==================================
         # core attention computation
         # ==================================
@@ -325,7 +326,11 @@ class Attention(MegatronModule, ABC):
                 attention_mask,
                 attn_mask_type=attn_mask_type,
                 packed_seq_params=packed_seq_params,
+                dot_func=self.aaa != 0
             )
+        core_attn_out = core_attn_out.transpose(1, 2).contiguous()
+        core_attn_out = core_attn_out.view(b, sq, -1)
+        core_attn_out = core_attn_out.permute(1,0,2)
 
         if packed_seq_params is not None:
             # reshape to same output shape as unpacked case
@@ -343,6 +348,8 @@ class Attention(MegatronModule, ABC):
         if self.config.profile:
             torch.cuda.nvtx.range_pop()
             timer.pop()
+
+        self.aaa += 1
         return output, bias
 
 

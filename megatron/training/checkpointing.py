@@ -836,11 +836,11 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
                                     .replace("final_norm","final_layernorm")
                 
                 key = key.replace("dense","linear_proj")
-                if "linear" in key:
-                    key = key.replace("weight","weight.weight")
+                # if "linear" in key:
+                #     key = key.replace("weight","weight.weight")
 
                 real_m[key] = tmp
-            model[0].load_state_dict(real_m, strict=False)
+            model[0].load_state_dict(real_m, strict=True)
         else:
             model[0].load_state_dict(state_dict['model'], strict=strict)
     else:

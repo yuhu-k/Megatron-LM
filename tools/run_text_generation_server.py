@@ -67,7 +67,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[LLaMAModel, meg
             transformer_layer_spec = import_module(args.spec)
         else:
             if use_te:
-                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm)
+                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, lora=False)
         model = LLaMAModel(
             config=config,
             transformer_layer_spec=transformer_layer_spec,
@@ -124,7 +124,7 @@ if __name__ == "__main__":
         torch.distributed.broadcast(choice, 0)
         if choice.item() == 0:
             try:
-                generate_and_post_process(model)
+                generate_and_post_process(model, top_k_sampling=10, top_p_sampling=0.9, temperature=0.6)
             except ValueError as ve:
                 pass
         elif choice.item() == 1:

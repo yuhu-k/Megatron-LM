@@ -606,6 +606,7 @@ def core_transformer_config_from_args(args, config_class=None):
     kw_args['finetune_mlp'] = args.finetune_mlp
     kw_args['profile'] = args.profile
     kw_args['swap_weight'] = args.swap_weight
+    kw_args['llama_size'] = args.llama_size
     if args.swiglu:
         kw_args['activation_func'] = F.silu
         kw_args['gated_linear_unit'] = True

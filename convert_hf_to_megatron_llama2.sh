@@ -2,9 +2,9 @@
 
 
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
-MODEL_TYPE="13b"
+MODEL_TYPE="7b"
 
-GLOBAL_SIZE=2 # GPUs' num
+GLOBAL_SIZE=1 # GPUs' num
 
 if [[ $MODEL_TYPE == 7b* ]]; then
     TP=1

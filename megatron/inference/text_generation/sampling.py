@@ -71,23 +71,19 @@ def sample(logits, top_k=0, top_p=0.0, temperature=1.0, vocab_size=None):
             logits.div_(temperature)
 
         if top_k > 1:
-            assert top_p == 0.0, 'cannot set both top-k and top-p samplings.'
+            #assert top_p == 0.0, 'cannot set both top-k and top-p samplings.'
             assert top_k <= logits.size(1), 'top-k is larger than logit size.'
             if vocab_size:
                 assert top_k < vocab_size, 'top-k is larger than vocab size.'
             modify_logits_for_top_k_filtering(logits, top_k)
+        
 
-        elif top_p > 0.0:
+        if top_p > 0.0:
             assert top_p <= 1.0, 'top-p should be in (0, 1].'
             modify_logits_for_top_p_filtering(logits, top_p)
 
         # After filtering, we need to recalculate the distribution.
         probs = logits.softmax(dim=-1)
-        samples = torch.multinomial(probs, num_samples=1).view(-1)
-
-    # If vocab size is provided, make sure the samples are in
-    # in the range [0, vocab-size).
-    if vocab_size:
-        samples = torch.clamp(samples, min=0, max=(vocab_size - 1))
+        samples = torch.multinomial(probs, num_samples=1).squeeze(-1)
 
     return samples

@@ -73,60 +73,87 @@ class MLP(MegatronModule):
             )
         else:
             self.pre_norm = None
+        
+        if config.finetune_method == "lora":
 
-        if config.gated_linear_unit:
-            self.linear_fc1_1 = build_module(
-                submodules.linear_fc1,
-                self.input_size,
-                int(ffn_hidden_size / 2),
+            if config.gated_linear_unit:
+                self.linear_fc1_1 = build_module(
+                    submodules.linear_fc1,
+                    self.input_size,
+                    int(ffn_hidden_size / 2),
+                    config=self.config,
+                    init_method=self.config.init_method,
+                    gather_output=False,
+                    bias=self.config.add_bias_linear,
+                    skip_bias_add=True,
+                    is_expert=is_expert,
+                    tp_comm_buffer_name='fc1-1',
+                    finetune_weight=False,
+                )
+                self.linear_fc1_2 = build_module(
+                    submodules.linear_fc1,
+                    self.input_size,
+                    int(ffn_hidden_size / 2),
+                    config=self.config,
+                    init_method=self.config.init_method,
+                    gather_output=False,
+                    bias=self.config.add_bias_linear,
+                    skip_bias_add=True,
+                    is_expert=is_expert,
+                    tp_comm_buffer_name='fc1-2',
+                    finetune_weight=False,
+                )
+            else:
+                self.linear_fc1 = build_module(
+                    submodules.linear_fc1,
+                    self.input_size,
+                    ffn_hidden_size,
+                    config=self.config,
+                    init_method=self.config.init_method,
+                    gather_output=False,
+                    bias=self.config.add_bias_linear,
+                    skip_bias_add=True,
+                    is_expert=is_expert,
+                    tp_comm_buffer_name='fc1',
+                )
+            self.linear_fc2 = build_module(
+                submodules.linear_fc2,
+                self.config.ffn_hidden_size,
+                self.config.hidden_size,
                 config=self.config,
-                init_method=self.config.init_method,
-                gather_output=False,
+                init_method=self.config.output_layer_init_method,
                 bias=self.config.add_bias_linear,
+                input_is_parallel=True,
                 skip_bias_add=True,
                 is_expert=is_expert,
-                tp_comm_buffer_name='fc1-1',
-                finetune_weight=False,
-            )
-            self.linear_fc1_2 = build_module(
-                submodules.linear_fc1,
-                self.input_size,
-                int(ffn_hidden_size / 2),
-                config=self.config,
-                init_method=self.config.init_method,
-                gather_output=False,
-                bias=self.config.add_bias_linear,
-                skip_bias_add=True,
-                is_expert=is_expert,
-                tp_comm_buffer_name='fc1-2',
+                tp_comm_buffer_name='fc2',
                 finetune_weight=False,
             )
         else:
             self.linear_fc1 = build_module(
-                submodules.linear_fc1,
-                self.input_size,
-                ffn_hidden_size,
+                    submodules.linear_fc1,
+                    self.input_size,
+                    ffn_hidden_size,
+                    config=self.config,
+                    init_method=self.config.init_method,
+                    gather_output=False,
+                    bias=self.config.add_bias_linear,
+                    skip_bias_add=True,
+                    is_expert=is_expert,
+                    tp_comm_buffer_name='fc1',
+                )
+            self.linear_fc2 = build_module(
+                submodules.linear_fc2,
+                self.config.ffn_hidden_size,
+                self.config.hidden_size,
                 config=self.config,
-                init_method=self.config.init_method,
-                gather_output=False,
+                init_method=self.config.output_layer_init_method,
                 bias=self.config.add_bias_linear,
+                input_is_parallel=True,
                 skip_bias_add=True,
                 is_expert=is_expert,
-                tp_comm_buffer_name='fc1',
+                tp_comm_buffer_name='fc2',
             )
-        self.linear_fc2 = build_module(
-            submodules.linear_fc2,
-            self.config.ffn_hidden_size,
-            self.config.hidden_size,
-            config=self.config,
-            init_method=self.config.output_layer_init_method,
-            bias=self.config.add_bias_linear,
-            input_is_parallel=True,
-            skip_bias_add=True,
-            is_expert=is_expert,
-            tp_comm_buffer_name='fc2',
-            finetune_weight=False,
-        )
 
         self.activation_func = self.config.activation_func
 
@@ -142,7 +169,7 @@ class MLP(MegatronModule):
         if self.pre_norm is not None:
             hidden_states = self.pre_norm(hidden_states)
 
-        if self.config.gated_linear_unit:
+        if self.config.finetune_method == "lora" and self.config.gated_linear_unit:
             gate = self.linear_fc1_1(hidden_states)
             up = self.linear_fc1_2(hidden_states)
             intermediate_parallel = torch.cat([gate[0],up[0]], dim=-1)

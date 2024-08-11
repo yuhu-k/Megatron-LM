@@ -10,8 +10,8 @@ if __name__ == "__main__":
     headers = {'Content-Type': 'application/json'}
 
     while True:
-        sentence = input("Enter prompt: ")
-        tokens_to_generate = int(eval(input("Enter number of tokens to generate: ")))
+        sentence = "Who are you?\n"#input("Enter prompt: ")
+        tokens_to_generate = 1023#int(eval(input("Enter number of tokens to generate: ")))
 
         data = {"prompts": [sentence], "tokens_to_generate": tokens_to_generate}
         response = requests.put(url, data=json.dumps(data), headers=headers)
@@ -21,3 +21,4 @@ if __name__ == "__main__":
         else:
             print("Megatron Response: ")
             print(response.json()['text'][0])
+        break

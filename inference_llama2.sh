@@ -1,6 +1,8 @@
 #!/bin/bash
 # This example will start serving the 345M model.
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export CUDA_VISIBLE_DEVICES=0
 
 HOSTNAME=$(hostname)
 if [[ $HOSTNAME == *4090* ]]; then
@@ -15,8 +17,6 @@ DISTRIBUTED_ARGS="--nproc_per_node 1 \
 		  --rdzv_id 12345 \
 		  --rdzv_backend c10d"
 
-CHECKPOINT_DIR="/tmp2/Megatron-LM/llama-2-$MODEL_TYPE-me/hf/tp1-pp1" #"result/$HOSTNAME/2024-06-30_09:49" #
-TOKENIZER_MODEL="/tmp2/Megatron-LM/llama-2-$MODEL_TYPE-hf/tokenizer.model"
 GLOBAL_SIZE=1 # GPUs' num
 
 # if [[ $MODEL_TYPE == 7b* ]]; then
@@ -32,15 +32,11 @@ GLOBAL_SIZE=1 # GPUs' num
 TP=1
 PP=$((${GLOBAL_SIZE} / ${TP}))
 echo $PP
-export CUDA_DEVICE_MAX_CONNECTIONS=1
+
+CHECKPOINT_DIR="/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf/tp${TP}-pp${PP}" #"result/$HOSTNAME/2024-06-30_09:49" #
+TOKENIZER_MODEL="/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-hf/tokenizer.model"
 
 pip install flask-restful
-
-ARGS="
-	--num-layers 32 \
-	--hidden-size 4096 \
-    --num-attention-heads 32 \
-"
 
 LLAMA_ARGS="
     --llama-size ${MODEL_TYPE}
@@ -54,6 +50,7 @@ torchrun $DISTRIBUTED_ARGS tools/run_text_generation_server.py   \
 	--tokenizer-type Llama2Tokenizer \
 	--tokenizer-model ${TOKENIZER_MODEL} \
 	--load ${CHECKPOINT_DIR} \
+	--fp16 \
 	--exit-on-missing-checkpoint \
 	--use-checkpoint-args \
 	--no-load-optim \
@@ -69,7 +66,10 @@ torchrun $DISTRIBUTED_ARGS tools/run_text_generation_server.py   \
 	--transformer-impl transformer_engine \
 	--llama-size $MODEL_TYPE \
 	--swiglu \
-	$LLAMA_ARGS
+	$LLAMA_ARGS \
+	--recompute-method uniform \
+    --recompute-granularity full \
+    --recompute-num-layers 32 \
 	#$ARGS
 	# --encoder-num-layers 32 \
 	# --hidden-size 4096 \

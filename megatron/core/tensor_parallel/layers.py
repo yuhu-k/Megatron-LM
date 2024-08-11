@@ -300,8 +300,8 @@ class LinearWithFrozenWeight(torch.autograd.Function):
         # (weight,) = hook.my_unpack_hook(*ctx.saved_tensors)
         (weight,) = ctx.saved_tensors
         weight = weight.to(torch.cuda.current_device())
-        grad_output = grad_output.to(dtype=torch.float32)
-        weight = weight.to(dtype=torch.float32)
+        # grad_output = grad_output.to(dtype=torch.float32)
+        # weight = weight.to(dtype=torch.float32)
         grad_input = grad_output.matmul(weight)
         
         print(1, grad_output, weight, grad_input, torch.matmul(grad_output, weight))

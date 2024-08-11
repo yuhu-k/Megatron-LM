@@ -408,6 +408,7 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
         self.config = config
         self.te_forward_mask_type = False
         self.qkv_format: str = 'sbhd'
+        self.layer_number = layer_number
 
         if self.config.apply_query_key_layer_scaling != bool(
             int(os.getenv('NVTE_APPLY_QK_LAYER_SCALING', '0'))
@@ -493,8 +494,8 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
         attention_mask: Tensor,
         attn_mask_type: AttnMaskType,
         packed_seq_params: PackedSeqParams = None,
+        dot_func: bool = False
     ):
-        
         packed_seq_kwargs = (
             dataclasses.asdict(packed_seq_params) if packed_seq_params is not None else {}
         )
@@ -520,6 +521,16 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
             # We unify them to the first one to pass the stride check in TE
             if value.shape == key.shape and value.shape[0] == 1 and value.stride() != key.stride():
                 value = value.as_strided(value.shape, key.stride())
+        
+        q = query.permute(1, 2, 0, 3)
+        k = key.permute(1, 2, 0, 3)
+        v = value.permute(1, 2, 0, 3)
+        
+        output = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=not dot_func)
+
+        return output
+        
+        
 
         if self.te_forward_mask_type:
             core_attn_out = super().forward(
