@@ -432,7 +432,6 @@ class _Linear(torch.autograd.Function):
             require_grad = weight.requires_grad
             if ctx is not None and ctx.store_weight == False:
                 swapper.offload_weight(ctx.w_id)
-                del weight
                 torch.cuda.empty_cache()
             
             # Column Parallel Linear
@@ -441,7 +440,7 @@ class _Linear(torch.autograd.Function):
 
             if not ctx.use_bias:
                 grad_bias = None
-                
+
 
         return (
             wgrad if require_grad else None,
@@ -530,7 +529,7 @@ class SwapLinear(Linear):
                 weight_id,
             )
             out = linear_fn(*args)
-
+        
         if self.gemm_bias_unfused_add:
             out = out + cast_if_needed(bias_tensor, self.activation_dtype)
 

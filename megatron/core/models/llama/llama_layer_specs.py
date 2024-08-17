@@ -51,7 +51,7 @@ def get_llama_layer_with_transformer_engine_spec(
                 ),
             ),
             self_attn_bda=get_bias_dropout_add,
-            pre_mlp_layernorm=SwapWeightNorm if lora else TENorm if num_experts else IdentityOp,
+            pre_mlp_layernorm=TENorm if num_experts else IdentityOp,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
         ),

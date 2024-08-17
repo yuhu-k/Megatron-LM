@@ -2,9 +2,9 @@
 
 
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
-MODEL_TYPE="7b"
+MODEL_TYPE="13b-chat"
 
-GLOBAL_SIZE=1 # GPUs' num
+GLOBAL_SIZE=2 # GPUs' num
 
 if [[ $MODEL_TYPE == 7b* ]]; then
     TP=1
@@ -30,7 +30,7 @@ python tools/checkpoint/convert.py --model-type GPT \
    --loader llama_mistral \
    --saver megatron \
    --checkpoint-type hf \
-   --model-size llama2-$(echo $MODEL_TYPE | tr '[:lower:]' '[:upper:]' | cut -d '-' -f 1) \
+   --model-size llama2-13B \
    --load-dir $LLAMA_META_FORMAT_DIR \
    --save-dir ${MEGATRON_FORMAT_DIR} \
    --tokenizer-model ${TOKENIZER_MODEL} \

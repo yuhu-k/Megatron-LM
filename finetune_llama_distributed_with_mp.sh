@@ -6,12 +6,12 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0
 
 
-GPUS_PER_NODE=1
-MODEL_TYPE="13b" #"13b"
+GPUS_PER_NODE=1 #2
+MODEL_TYPE="7b" #"13b"
 # Change for multinode config
 MASTER_ADDR=eclab40902b # mgmt01
 MASTER_PORT=6000
-NNODES=1
+NNODES=1 #1
 WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 HOSTNAME=$(hostname)
 TIME=$(date '+%Y-%m-%d_%H:%M')
@@ -40,11 +40,11 @@ else
 fi
 
 TPdegree=1
-PPdegree=1
+PPdegree=1 #2
 DPdegree=$(( WORLD_SIZE / TPdegree / PPdegree ))
 
 CHECKPOINT_PATH=llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
-DATA_PATH=/tmp2/Megatron-LM/dataset/llama-data_text_document
+DATA_PATH=/tmp2/Megatron-LM/dataset2/llama-data_text_document
 RESULTS_PATH=/tmp2/Megatron-LM/results/$HOSTNAME/$TIME
 TOKENIZER_MODEL=/tmp2/Megatron-LM/tokenizer.model
 
@@ -77,8 +77,8 @@ DISTRIBUTED_ARGS="
 GPT_ARGS="
     --tensor-model-parallel-size $TPdegree \
     --pipeline-model-parallel-size $PPdegree \
-    --seq-length 1024 \
-    --max-position-embeddings 1024 \
+    --seq-length 512 \
+    --max-position-embeddings 512 \
     --tokenizer-type Llama2Tokenizer \
     --tokenizer-model ${TOKENIZER_MODEL} \
     --micro-batch-size 4 \
@@ -91,7 +91,7 @@ GPT_ARGS="
     --weight-decay 1e-2 \
     --lr-warmup-fraction .01 \
     --clip-grad 1.0 \
-    --fp16 \
+    --bf16 \
     --use-mcore-models \
     --exit-on-missing-checkpoint \
     --use-checkpoint-args \
@@ -103,11 +103,12 @@ GPT_ARGS="
 	--position-embedding-type rope \
 	--no-masked-softmax-fusion \
 	--attention-softmax-in-fp32 \
-    --train-iters 100 \
+    --train-iters 10000 \
+    --recompute-method block \
+    --recompute-granularity full \
+    --recompute-num-layers $(($LAYER_NUM / $PPdegree))
 "
-# --recompute-method uniform \
-#     --recompute-granularity full \
-#     --recompute-num-layers $(($LAYER_NUM / $PPdegree))
+
 #--num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree))
 
 LLAMA_ARGS="
@@ -119,20 +120,20 @@ LLAMA_ARGS="
 NSYS_ARGS="
     --force-overwrite true \
     -o /tmp2/yuhu/${HOSTNAME}_${TIME} \
-    --gpu-metrics-device all \
     --capture-range cudaProfilerApi \
     --capture-range-end stop-shutdown \
     --trace=nvtx,cuda,cudnn \
     --backtrace=none \
-    --gpu-metrics-set 0 \
     --cuda-memory-usage true
 "
+    #--gpu-metrics-device all \
+    #--gpu-metrics-set 0 \
 
 PROF_ARGS="
     --profile \
     --profile-ranks 0 1 2 3 4 5 6 7\
-    --profile-step-start 5 \
-    --profile-step-end 10 \
+    --profile-step-start 120 \
+    --profile-step-end 200 \
     --profile-output /tmp2/yuhu/${HOSTNAME}_${MODEL_TYPE}_${TIME}.json
 "
 
@@ -183,6 +184,8 @@ torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \
     $PROF_ARGS \
-    --swap-weight \
-    $LMS_ARGS \
+    #--no-gradient-accumulation-fusion \
+    #--swap-weight \
+    #--offload-activation
+    # $LMS_ARGS \
 

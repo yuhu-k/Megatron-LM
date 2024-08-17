@@ -15,6 +15,7 @@ from megatron.core.datasets.megatron_dataset import MegatronDataset
 from megatron.core.datasets.megatron_tokenizer import MegatronTokenizer
 from megatron.core.datasets.utils import Split
 from megatron.core.utils import log_single_rank
+from megatron.training import get_args
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,10 @@ class GPTDataset(MegatronDataset):
             self.sample_index,
             self.shuffle_index,
         ) = self._build_document_sample_shuffle_indices()
+        
+        args = get_args()
+        self.leng = []
+        self.batch_num = args.micro_batch_size
 
     @staticmethod
     def numel_low_level_dataset(low_level_dataset: IndexedDataset) -> int:
@@ -171,12 +176,7 @@ class GPTDataset(MegatronDataset):
             tokens = text
             labels = torch.roll(text, shifts=-1, dims=0)
             labels[-1] = self._pad_token_id
-
-        if (
-            not self.masks_and_position_ids_are_cacheable
-            or not self.masks_and_position_ids_are_cached
-        ):
-            attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
+        attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
                 tokens,
                 self.config.tokenizer.eod,
                 self.config.reset_position_ids,
@@ -184,16 +184,28 @@ class GPTDataset(MegatronDataset):
                 self.config.eod_mask_loss,
                 self.config.create_attention_mask,
             )
-            if self.masks_and_position_ids_are_cacheable:
-                self.cached_attention_mask = attention_mask
-                self.cached_loss_mask = loss_mask
-                self.cached_position_ids = position_ids
-                self.masks_and_position_ids_are_cached = True
-        else:
-            attention_mask = self.cached_attention_mask
-            loss_mask = self.cached_loss_mask
-            position_ids = self.cached_position_ids
-
+        # if (
+        #     not self.masks_and_position_ids_are_cacheable
+        #     or not self.masks_and_position_ids_are_cached
+        # ):
+        #     attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
+        #         tokens,
+        #         self.config.tokenizer.eod,
+        #         self.config.reset_position_ids,
+        #         self.config.reset_attention_mask,
+        #         self.config.eod_mask_loss,
+        #         self.config.create_attention_mask,
+        #     )
+        #     if self.masks_and_position_ids_are_cacheable:
+        #         self.cached_attention_mask = attention_mask
+        #         self.cached_loss_mask = loss_mask
+        #         self.cached_position_ids = position_ids
+        #         self.masks_and_position_ids_are_cached = True
+        # else:
+        #     attention_mask = self.cached_attention_mask
+        #     loss_mask = self.cached_loss_mask
+        #     position_ids = self.cached_position_ids
+        
         # For padded sequences, mask the loss
         loss_mask[labels == self._pad_token_id] = 0.0
 
@@ -220,9 +232,8 @@ class GPTDataset(MegatronDataset):
                 "loss_mask": loss_mask,
                 "position_ids": position_ids,
             }
-
-    def _query_document_sample_shuffle_indices(
-        self, idx: int
+    def __query_document_sample_shuffle_indices_no_leng(
+        self, idx:int
     ) -> Tuple[numpy.ndarray, numpy.ndarray]:
         """Get the text (token ids) and document ids for a given index
 
@@ -278,19 +289,65 @@ class GPTDataset(MegatronDataset):
             sample_parts
         ), f"len(document_ids) ({len(document_ids)}) != len(sample_parts) ({len(sample_parts)})"
 
-        length = sum(map(len, sample_parts))
+        # length = sum(map(len, sample_parts))
 
-        # Pad the sample if necessary
-        if length < (self.config.sequence_length + self.config.add_extra_token_to_sequence):
-            sample_parts.append(
-                [self._pad_token_id]
-                * (self.config.sequence_length + self.config.add_extra_token_to_sequence - length)
-            )
+        # # Pad the sample if necessary
+        # if length < (self.config.sequence_length + self.config.add_extra_token_to_sequence):
+        #     sample_parts.append(
+        #         [self._pad_token_id]
+        #         * (self.config.sequence_length + self.config.add_extra_token_to_sequence - length)
+        #     )
+    
+        # l = len(max(sample_parts, key=len))
+        # for i in range(len(sample_parts)):
+        #     l2 = len(sample_parts[i])
+        #     if l2 < l:
+        #         padding = numpy.zeros((l - l2,) + sample_parts[i].shape[1:], dtype=sample_parts[i].dtype)
+        #         #sample_parts[i].extend([self._pad_token_id]*(l-len(sample_parts[i])))
+        #         sample_parts[i] = numpy.concatenate([sample_parts[i], padding], axis=0)
+        import random
 
+        # 從範圍 [1, 10] 中隨機選取一個整數
+        #random_integer = random.randint(0, len(sample_parts)-1)
+        random_integer = len(sample_parts)-1
         return (
-            numpy.concatenate(sample_parts, dtype=numpy.int64),
-            numpy.array(document_ids, dtype=numpy.int64),
+            numpy.concatenate(sample_parts[random_integer:], dtype=numpy.int64),
+            numpy.array(document_ids[random_integer:], dtype=numpy.int64),
         )
+        # return (
+        #     numpy.concatenate(sample_parts, dtype=numpy.int64),
+        #     numpy.array(document_ids, dtype=numpy.int64),
+        # )
+    def _query_document_sample_shuffle_indices(
+        self, idx: int
+    ) -> Tuple[numpy.ndarray, numpy.ndarray]:
+        """Get the text (token ids) and document ids for a given index
+
+        Args:
+            idx (int): The index into the dataset
+
+        Returns:
+            Tuple[numpy.ndarray, numpy.ndarray]: The text ids and document ids
+        """
+        
+        if not(len(self.leng) > int(idx/self.batch_num) and self.leng[int(idx/self.batch_num)] != None):
+            while len(self.leng) <= int(idx/self.batch_num):
+                self.leng.append(None)
+                
+            base = int(idx/self.batch_num)*self.batch_num
+            for i in range(base, base+self.batch_num):
+                sample, _ = self.__query_document_sample_shuffle_indices_no_leng(i)
+                if self.leng[int(idx/self.batch_num)] == None or len(sample) > self.leng[int(idx/self.batch_num)]:
+                    self.leng[int(idx/self.batch_num)] = len(sample)
+                    
+        l = self.leng[int(idx/self.batch_num)]
+        samples, ids = self.__query_document_sample_shuffle_indices_no_leng(idx)
+        if len(samples) < l:
+            tmp = [self._pad_token_id] * (l - len(samples))
+            samples = numpy.concatenate([samples, tmp], dtype=numpy.int64)
+            ids = numpy.concatenate([ids, tmp], dtype=numpy.int64)
+        return samples, ids
+                
 
     def _build_document_sample_shuffle_indices(
         self,
@@ -517,7 +574,6 @@ class GPTDataset(MegatronDataset):
         Returns:
             int: The number of tokens in a single epoch
         """
-        print(self.indices,self.dataset.sequence_lengths)
         return int(numpy.sum(self.dataset.sequence_lengths[self.indices]))
 
     def _get_num_epochs(self, num_tokens_per_epoch: int) -> int:

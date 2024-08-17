@@ -288,6 +288,8 @@ class TransformerConfig(ModelParallelConfig):
     
     finetune_lora_alpha: float = 16
     
+    finetune_lora_sigma: float = 0.01
+    
     finetune_lora_dropout: float = 0.05
     
     finetune_lora_quantize_base: bool = False

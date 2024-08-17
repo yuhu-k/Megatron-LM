@@ -538,7 +538,6 @@ class IndexedDataset(torch.utils.data.Dataset):
             with open(get_bin_path(self.path_prefix), mode='rb', buffering=0) as bin_buffer_file:
                 bin_buffer_file.seek(sequence_pointer)
                 bin_buffer_file.readinto(sequence)
-
         return (sequence, sequence_mode) if sequence_mode is not None else sequence
 
     @property

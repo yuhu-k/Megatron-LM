@@ -62,7 +62,9 @@ from .global_vars import (
 
 # 0513 integrate lms to megatron lm
 import large_model_gpu as lms
-from swap_manager import init_weight_swapper
+from swap_manager import init_weight_swapper, get_weight_swapper
+import time
+from training_speed_recorder import get_recorder, init_recorder
 
 stimer = StragglerDetector()
 
@@ -205,6 +207,7 @@ def pretrain(train_valid_test_dataset_provider,
         device = ipc_object.device
         lms.init(device, args, enable_multi_gpu=True, ipc_object=ipc_object, skip_sync_iterations=-1)
     lms.init_pack_hook(args.profile, args.lms, args.lms_swap_nonblocking)
+    init_recorder()
         
     if args.swap_weight:
         init_weight_swapper()
@@ -286,11 +289,25 @@ def pretrain(train_valid_test_dataset_provider,
 
         iteration = 0
         if args.do_train and args.train_iters > 0:
-            iteration, num_floating_point_operations_so_far = train(
-                forward_step_func,
-                model, optimizer, opt_param_scheduler,
-                train_data_iterator, valid_data_iterator,
-                process_non_loss_data_func, config, checkpointing_context)
+            if args.offload_activation:
+                def pack_hook(x:torch.Tensor):
+                    return (x.device, x.to("cpu", non_blocking=True))
+                    
+                def unpack_hook(packed: tuple[int, torch.Tensor]):
+                    device, tensor = packed
+                    return tensor.to(device)
+                with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+                    iteration, num_floating_point_operations_so_far = train(
+                        forward_step_func,
+                        model, optimizer, opt_param_scheduler,
+                        train_data_iterator, valid_data_iterator,
+                        process_non_loss_data_func, config, checkpointing_context)
+            else:
+                iteration, num_floating_point_operations_so_far = train(
+                    forward_step_func,
+                    model, optimizer, opt_param_scheduler,
+                    train_data_iterator, valid_data_iterator,
+                    process_non_loss_data_func, config, checkpointing_context)
 
         print_datetime('after training is done')
 
@@ -571,6 +588,10 @@ def train_step(forward_step_func, data_iterator,
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False)
+    
+    # for name, param in model[0].named_parameters():
+    #     if param.requires_grad and ".31." in name:
+    #         print(f"{name}: {param.data} {param.grad}")
 
     # Empty unused memory.
     if args.empty_unused_memory_level >= 1:
@@ -581,10 +602,6 @@ def train_step(forward_step_func, data_iterator,
     if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
-        
-    for name, param in model[0].named_parameters():
-        if param.requires_grad:
-            print(f"{name}: {param.data} {param.grad}")
 
     # Update parameters.
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
@@ -600,13 +617,12 @@ def train_step(forward_step_func, data_iterator,
     timers('optimizer').stop()
     
 
-
         
     torch.cuda.empty_cache()
-    allocated = torch.cuda.memory_allocated() / 1024**3
-    reserved = torch.cuda.memory_reserved() / 1024**3
-    print(f"Allocated GPU memory after opt update: {allocated:.2f} GB")
-    print(f"Reserved GPU memory after opt update: {reserved:.2f} GB")
+    # allocated = torch.cuda.memory_allocated() / 1024**3
+    # reserved = torch.cuda.memory_reserved() / 1024**3
+    # print(f"Allocated GPU memory after opt update: {allocated:.2f} GB")
+    # print(f"Reserved GPU memory after opt update: {reserved:.2f} GB")    
 
     # Vision momentum.
     if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
@@ -1038,13 +1054,15 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                 'train_iterations_time_msecs_avg': train_iterations_time_msecs_avg,
                 'validation_iterations_time_msecs_avg': validation_iterations_time_msecs_avg
             })
+    for name, param in model[0].named_parameters():
+        if "lora" in name:
+            param.requires_grad_(True)
     if torch.distributed.get_rank() == 0:
         progress_bar = tqdm(total=args.train_iters, desc='finetuning...', unit='iteration')
     if args.profile:
         self_timer = get_self_define_timer()
     while iteration < args.train_iters:
-        device = torch.cuda.current_device()
-        print(f"Max memory allocated on cuda:{device}: {torch.cuda.max_memory_allocated(device)/(1024**3)} GB")
+        
         if torch.distributed.get_rank() == 0:
             progress_bar.update(1)
         if args.profile and \
@@ -1053,6 +1071,8 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             torch.cuda.cudart().cudaProfilerStart()
             torch.autograd.profiler.emit_nvtx(record_shapes=True).__enter__()
             self_timer.start()
+            recorder = get_recorder()
+            recorder.start()
         maybe_finalize_async_save(False)
 
         # Update number of microbatches first without consistency check to decide if a
@@ -1213,6 +1233,10 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         if args.profile and \
            iteration == args.profile_step_end and \
            torch.distributed.get_rank() in args.profile_ranks:
+            recorder.end()
+            print(f"average finetuning speed: {recorder.get_speed() } token/sec")
+            device = torch.cuda.current_device()
+            print(f"Max memory allocated on cuda:{device}: {torch.cuda.max_memory_allocated(device)/(1024**3)} GB")
             self_timer.end(args.profile_output)
             torch.cuda.cudart().cudaProfilerStop()
 
@@ -1220,9 +1244,12 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             if args.manual_gc_interval != 0 and iteration % args.manual_gc_interval == 0:
                 gc.collect()
         
-        from swap_manager import get_weight_swapper
-        swapper = get_weight_swapper()
-        swapper.finish_warmup()
+        if args.swap_weight:
+            swapper = get_weight_swapper()
+            swapper.finish_warmup()
+            ratio = swapper.get_in_gpu_weight_ratio()
+            print(f"Ratio: {ratio}")
+            swapper.reset_tmp_list()
     progress_bar.close()
     track_e2e_metrics()
 

@@ -67,7 +67,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[LLaMAModel, meg
             transformer_layer_spec = import_module(args.spec)
         else:
             if use_te:
-                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, lora=False)
+                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, lora=args.swap_weight or args.finetune_method == "lora")
         model = LLaMAModel(
             config=config,
             transformer_layer_spec=transformer_layer_spec,

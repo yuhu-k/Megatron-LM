@@ -601,6 +601,7 @@ def core_transformer_config_from_args(args, config_class=None):
     kw_args['finetune_method'] = args.finetune_method
     kw_args['finetune_lora_rank'] = args.finetune_lora_rank
     kw_args['finetune_lora_alpha'] = args.finetune_lora_alpha
+    kw_args['finetune_lora_sigma'] = args.finetune_lora_sigma
     kw_args['finetune_lora_dropout'] = args.finetune_lora_dropout
     kw_args['finetune_lora_quantize_base'] = args.finetune_lora_quantize_base
     kw_args['finetune_mlp'] = args.finetune_mlp
@@ -1176,6 +1177,9 @@ def _add_training_args(parser):
     group.add_argument('--finetune-lora-alpha', type=float, default=16,
                         help="Set the fine-tuning lora alpha",
                         dest='finetune_lora_alpha')
+    group.add_argument('--finetune-lora-sigma', type=float, default=0.01,
+                        help="Set the fine-tuning lora sigma",
+                        dest='finetune_lora_sigma')
     group.add_argument('--finetune-lora-dropout', type=float, default=0.05,
                         help="Set the fine-tuning lora dropout",
                         dest='finetune_lora_dropout')
@@ -1323,6 +1327,8 @@ def _add_checkpointing_args(parser):
                             'different checkpointing performance optimizations.')
     group.add_argument('--llama-size', type=str, default=None,
                         help="Set model size")
+    group.add_argument('--offload-activation', action='store_true',
+                        help="If set, the activation will offload to cpu memory between forward and backward propagation.")
     return parser
 
 

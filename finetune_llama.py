@@ -18,6 +18,7 @@ from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegat
 from megatron.core.datasets.utils import get_blend_from_list
 from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 from megatron.core.datasets.gpt_dataset import MockGPTDataset, GPTDataset
+from megatron.core.datasets.llama_dataset import LLaMADataset
 import megatron.legacy.model
 from megatron.core.models.llama import LLaMAModel
 from megatron.training import pretrain
@@ -30,7 +31,7 @@ from megatron.training.utils import (
 from megatron.training.arguments import core_transformer_config_from_args
 from megatron.training.yaml_arguments import core_transformer_config_from_yaml
 from megatron.core.models.llama.llama_layer_specs import get_llama_layer_with_transformer_engine_spec
-
+from training_speed_recorder import get_recorder
 
 
 stimer = StragglerDetector()
@@ -71,7 +72,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[LLaMAModel, meg
             transformer_layer_spec = import_module(args.spec)
         else:
             if use_te:
-                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
+                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, lora=args.swap_weight or args.finetune_method == "lora")
             else:
                 assert(False), "Please set --use-te"
         with open("/tmp2/yuhu/result.txt", "a") as f:
@@ -177,7 +178,6 @@ def forward_step(data_iterator, model: LLaMAModel):
         model (GPTModel): The GPT Model
     """
     
-    args = get_args()
     timers = get_timers()
 
     # Get the batch.
@@ -187,11 +187,11 @@ def forward_step(data_iterator, model: LLaMAModel):
         tokens, labels, loss_mask, attention_mask, position_ids = get_batch(
             data_iterator)
     timers('batch-generator').stop()
-
+    recorder = get_recorder()
+    recorder.add_tokens_count(tokens.numel())
     with stimer:
         output_tensor = model(tokens, position_ids, attention_mask,
                               labels=labels)
-
     return output_tensor, partial(loss_func, loss_mask)
 
 
@@ -238,7 +238,7 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
     if args.mock_data:
         dataset_type = MockGPTDataset
     else:
-        dataset_type = GPTDataset
+        dataset_type = LLaMADataset
 
     print_rank_0("> building train, validation, and test datasets for GPT ...")
 

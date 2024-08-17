@@ -84,7 +84,6 @@ class SwapWeightTemplate:
                 output = forward_function(inp, weight)
             else:
                 output = forward_function(inp)
-            
         if weight_id is not None or self.swap_weight:
             swapper = get_weight_swapper()
             swapper.offload_weight(weight_id if weight_id is not None else w_id if w_id is not None else self.swap_weight_id)
@@ -318,7 +317,7 @@ class SwapTPColumnParallelLinear(tensor_parallel.ColumnParallelLinear, SwapWeigh
                         "and skip_weight_param_allocation is True."
                     )
 
-        return SwapWeightTemplate._forward(self, inp, super().forward, weight)
+        return SwapWeightTemplate._forward(self, inp, super().forward, weight if not self.swap_weight else None, weight if self.swap_weight else None)
     
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
         return SwapWeightTemplate._load_state_dict(self, state_dict, strict, assign)

@@ -5,13 +5,16 @@ import torch
 
 
 class WeightSwapper:
-    def __init__(self) -> None:
+    def __init__(self, warmup_iteration_times = 1) -> None:
         self.weight_dict = []
         self.device_dict = []
         self.gpu_weight_dict = []
         self.weight_id_count = 0
         self.warmup = True
         self.use_order = []
+        self.order_list = []
+        self.tmp_list = []
+        self.warmup_iteration_times = warmup_iteration_times
         
         # self.swap_thread = []
         # self.active_threads = 0
@@ -63,54 +66,80 @@ class WeightSwapper:
                     #     thread.join()
                         
                 #self.lock_weight_dict.acquire()
-                self.gpu_weight_dict[weight_id] = weight.to(self.device_dict[weight_id], non_blocking=False)
+                self.gpu_weight_dict[weight_id] = weight.to(self.device_dict[weight_id], non_blocking=False).detach()
                 #self.lock_weight_dict.release()
             else:
                 RuntimeError(f"Error, missing weight id {weight_id}")
-        return self.gpu_weight_dict[weight_id].detach()
+        return self.gpu_weight_dict[weight_id]
             
     def offload_weight(self, weight_id):
         if self.warmup:
             self.use_order.append((weight_id, "offload"))
-            self.gpu_weight_dict[weight_id] = None
+            del self.gpu_weight_dict[weight_id]
+            self.gpu_weight_dict.insert(weight_id, None)
         else:
             if self.decide_offload_weight(weight_id):
                 self.gpu_weight_dict[weight_id] = None
                 torch.cuda.empty_cache()
-            self.order_list.append(self.order_list.pop(0))
             
     def get_weight_cpu(self, weight_id):
         weight = self.weight_dict[weight_id]
         if weight != None:
-            return weight.detach()
+            return weight
         else:
             RuntimeError(f"Error, missing weight id {weight_id}")
             
     def dump_user_order(self):
         with open("/tmp2/tests.txt", "w") as f:
-            f.write(str(self.order_list) + "\n")
+            i = 1
+            for l in self.order_list:
+                f.write(f"{i}: " + str(l) + "\n")
+                i += 1
             
     def finish_warmup(self):
         if self.warmup:
+            self.warmup_iteration_times -= 1
             self.build_weight_order()
-            self.warmup = False
-            self.order_list.pop(0)
-            #self.dump_user_order()
+            if self.warmup_iteration_times <= 0:
+                self.warmup = False
+                self.dump_user_order()
         
     def build_weight_order(self):
-        self.order_list = []
+        tmp_order_list = []
         for id, act in self.use_order:
             if act == "offload":
-                self.order_list.append(id)
+                tmp_order_list.append(id)
+        self.use_order = []
+        self.order_list.append(tmp_order_list)
+                        
+    def decide_offload_weight(self, weight_id) -> bool:
+        offload = True
+        for l in self.tmp_list:
+            order_list = l
+            len = 0#int(order_list.__len__() * 1/2)
+            half_list = order_list[:len]
+            if weight_id in half_list:
+                offload = False
+                break
+        self.update_tmp_list()
+        return offload
         
-    def decide_offload_weight(self, weight_id):
-        order_list = self.order_list
-        len = 1#int(order_list.__len__() / 2)
-        half_list = order_list[:len]
-        if weight_id in half_list:
-            return False
-        else:
-            return True
+    def update_tmp_list(self):
+        for id in range(self.tmp_list.__len__()):
+            self.tmp_list[id].append(self.tmp_list[id].pop(0))
+    
+    def reset_tmp_list(self):
+        if not self.warmup:
+            self.tmp_list = self.order_list.copy()
+            self.update_tmp_list()
+        
+    def get_in_gpu_weight_ratio(self):
+        count = 0
+        for w in self.gpu_weight_dict:
+            if w is not None:
+                count += 1
+                
+        return count / self.gpu_weight_dict.__len__()
     
     # def add_swap_thread(self, weight_id):
     #     def swap_to_gpu(weight_id):

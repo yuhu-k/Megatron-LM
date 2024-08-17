@@ -826,6 +826,7 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
                 return r
             m = make_chpt(state_dict['model']['language_model'],"")
             real_m = {}
+            lora=args.finetune_method=="lora"
             for key in m:
                 tmp = m[key]
                 key:str = key.replace("encoder","decoder").replace("dense_h_to_4h","linear_fc1")\
@@ -836,10 +837,29 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
                                     .replace("final_norm","final_layernorm")
                 
                 key = key.replace("dense","linear_proj")
-                # if "linear" in key:
-                #     key = key.replace("weight","weight.weight")
+                
+                if "fc1" in key and lora:
+                    if tmp == None:
+                        tensor1, tensor2 = None, None
+                    else:
+                        tensor1, tensor2 = torch.chunk(tmp, 2, dim=0)
+                    key1 = key.replace("fc1", "fc1_1")
+                    key2 = key.replace("fc1", "fc1_2")
+                    real_m[key1] = tensor1
+                    real_m[key2] = tensor2
+                    continue
+                # if args.swap_weight or args.finetune_method == "lora":
+                #     if "linear" in key:
+                #         key = key.replace("weight","weight.weight")
 
                 real_m[key] = tmp
+            for name, param in model[0].named_parameters():
+                if "lora" in name and name not in real_m.keys():
+                    if "lora_a" in name:
+                        real_m[name] = torch.randn_like(param) * (args.finetune_lora_sigma ** 2)
+                    else:
+                        real_m[name] = torch.zeros_like(param)
+                    real_m[name.replace("weight", "_extra_state")] = None
             model[0].load_state_dict(real_m, strict=True)
         else:
             model[0].load_state_dict(state_dict['model'], strict=strict)

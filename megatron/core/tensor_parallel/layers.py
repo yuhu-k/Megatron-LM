@@ -40,6 +40,7 @@ from .random import get_cuda_rng_tracker, get_expert_parallel_rng_tracker_name
 from .utils import VocabUtility, divide, split_tensor_along_last_dim
 
 from large_model_gpu import get_pack_hook
+from swap_manager import get_weight_swapper
 
 
 _grad_accum_fusion_available = True
@@ -282,15 +283,22 @@ class LinearWithFrozenWeight(torch.autograd.Function):
     @staticmethod
     @custom_fwd
     def forward(
-        ctx, input, weight, bias, allreduce_dgrad,
+        ctx, input, weight, bias, allreduce_dgrad, weight_id=None
     ):
+        ctx.store_weight = True
+        if weight_id != None:
+            swapper = get_weight_swapper()
+            weight = swapper.get_weight(weight_id)
+            ctx.w_id = weight_id
+            ctx.store_weight = False
         ctx.allreduce_dgrad = allreduce_dgrad
         output = torch.matmul(input, weight.t())
         if bias is not None:
             output = output + bias
         # hook = get_pack_hook()
         # ctx.save_for_backward(*hook.my_pack_hook(weight))
-        ctx.save_for_backward(weight.cpu())
+        if ctx.store_weight:
+            ctx.save_for_backward(weight)
         return output
 
     @staticmethod
@@ -298,19 +306,26 @@ class LinearWithFrozenWeight(torch.autograd.Function):
     def backward(ctx, grad_output):
         # hook = get_pack_hook()
         # (weight,) = hook.my_unpack_hook(*ctx.saved_tensors)
-        (weight,) = ctx.saved_tensors
+        if ctx.store_weight:
+            (weight,) = ctx.saved_tensors
+        else:
+            swapper = get_weight_swapper()
+            weight = swapper.get_weight(ctx.w_id)
+            
         weight = weight.to(torch.cuda.current_device())
         # grad_output = grad_output.to(dtype=torch.float32)
         # weight = weight.to(dtype=torch.float32)
         grad_input = grad_output.matmul(weight)
         
-        print(1, grad_output, weight, grad_input, torch.matmul(grad_output, weight))
+        if not ctx.store_weight:
+            swapper.offload_weight(ctx.w_id)
+        
 
         if ctx.allreduce_dgrad:
             # All-reduce. Note: here async and sync are effectively the same.
             torch.distributed.all_reduce(grad_input, group=get_tensor_model_parallel_group())
 
-        return grad_input, None, None, None
+        return grad_input, None, None, None, None
 
 
 def linear_with_frozen_weight(
@@ -322,6 +337,7 @@ def linear_with_frozen_weight(
     sequence_parallel: bool,
     grad_output_buffer: Optional[List[torch.Tensor]] = None,
     allreduce_dgrad: bool = None,
+    weight_id: int = None,
 ) -> torch.Tensor:
     """Linear layer execution with weight.requires_grad == False.
 
@@ -379,6 +395,7 @@ def linear_with_frozen_weight(
         weight,
         bias,
         allreduce_dgrad,
+        weight_id,
     ]
 
     return LinearWithFrozenWeight.apply(*args)
@@ -824,7 +841,7 @@ class ColumnParallelLinear(torch.nn.Module):
             )
         )
 
-    def forward(self, input_: torch.Tensor, weight: Optional[torch.Tensor] = None):
+    def forward(self, input_: torch.Tensor, weight: Optional[torch.Tensor] = None, weight_id: Optional[int] = None):
         """Forward of ColumnParallelLinear
 
         Args:
@@ -838,21 +855,22 @@ class ColumnParallelLinear(torch.nn.Module):
             - bias
 
         """
-        if weight is None:
-            if self.weight is None:
-                raise RuntimeError(
-                    "weight was not supplied to ColumnParallelLinear forward pass "
-                    "and skip_weight_param_allocation is True."
-                )
-            weight = self.weight
-        else:
-            # Check the weight passed in is the correct shape
-            expected_shape = (self.output_size_per_partition, self.input_size)
-            if weight.shape != expected_shape:
-                raise RuntimeError(
-                    f"supplied weight's shape is {tuple(weight.shape)}, "
-                    f"not {expected_shape} as expected"
-                )
+        if weight_id == None:
+            if weight is None:
+                if self.weight is None:
+                    raise RuntimeError(
+                        "weight was not supplied to ColumnParallelLinear forward pass "
+                        "and skip_weight_param_allocation is True."
+                    )
+                weight = self.weight
+            else:
+                # Check the weight passed in is the correct shape
+                expected_shape = (self.output_size_per_partition, self.input_size)
+                if weight.shape != expected_shape:
+                    raise RuntimeError(
+                        f"supplied weight's shape is {tuple(weight.shape)}, "
+                        f"not {expected_shape} as expected"
+                    )
 
         if self.config._cpu_offloading_context is not None:
             if self.config._cpu_offloading_context.inside_context == True:
@@ -876,7 +894,7 @@ class ColumnParallelLinear(torch.nn.Module):
             self.embedding_activation_buffer.append(input_parallel)
 
         # Matrix multiply.
-        if not weight.requires_grad:
+        if weight_id is not None or not weight.requires_grad:
             self._forward_impl = linear_with_frozen_weight
         else:
             self._forward_impl = linear_with_grad_accumulation_and_async_allreduce
@@ -885,7 +903,7 @@ class ColumnParallelLinear(torch.nn.Module):
 
         output_parallel = self._forward_impl(
             input=input_parallel,
-            weight=weight,
+            weight=weight if weight_id is None else None,
             bias=bias,
             gradient_accumulation_fusion=self.gradient_accumulation_fusion,
             async_grad_allreduce=allreduce_dgrad,
@@ -894,6 +912,7 @@ class ColumnParallelLinear(torch.nn.Module):
             if self.config.defer_embedding_wgrad_compute
             else None,
             allreduce_dgrad=allreduce_dgrad,
+            weight_id=weight_id
         )
         if self.gather_output:
             # All-gather across the partitions.
