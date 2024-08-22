@@ -1168,8 +1168,8 @@ def _add_training_args(parser):
                        dest='tp_comm_split_rs')
     
     # self-defined for llama finetune
-    group.add_argument('--finetune-method',choices=["lora", "all"],
-                        help="Choose the fine-tuning method: 'lora' or 'all'",
+    group.add_argument('--finetune-method',choices=["lora", "qlora", "all"],
+                        help="Only support the following fine-tuning methods: 'lora', 'qlora' or 'all'",
                         dest='finetune_method')
     group.add_argument('--finetune-lora-rank',type=int, default=8,
                         help="Set the fine-tuning lora rank",

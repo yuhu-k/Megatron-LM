@@ -102,7 +102,7 @@ class WeightSwapper:
             self.build_weight_order()
             if self.warmup_iteration_times <= 0:
                 self.warmup = False
-                self.dump_user_order()
+                #self.dump_user_order()
         
     def build_weight_order(self):
         tmp_order_list = []

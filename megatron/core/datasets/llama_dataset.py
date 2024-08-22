@@ -56,7 +56,7 @@ class LLaMADataset(GPTDataset):
         self.leng = []
         self.batch_num = args.micro_batch_size
         self.max_seq_len = args.seq_length
-        self.length = len(self)
+        self.length = len(self.dataset)
         self.__build_shuffle_indices()
 
     def __getitem__(self, idx: Optional[int]) -> Dict[str, torch.Tensor]:
@@ -257,13 +257,13 @@ class LLaMADataset(GPTDataset):
     
     def __build_shuffle_indices(self):
         self.indices = list(range(self.length))
-        random.shuffle(self.indices)
+        #random.shuffle(self.indices)
         
     def get_sample_and_positionid(self, idx:int):
         document_ids = []
         shuffle_id = self.indices[idx]
-        document_ids.append(self.document_index[shuffle_id])
-        tokens_seq = self.dataset.get(idx=self.document_index[shuffle_id])
+        document_ids.append(shuffle_id)
+        tokens_seq = self.dataset.get(idx=shuffle_id)
         if len(tokens_seq) > self.max_seq_len:
             tokens_seq = tokens_seq[:self.max_seq_len]
         return numpy.array(tokens_seq, dtype=numpy.int64), numpy.array(document_ids, dtype=numpy.int64)

@@ -6,7 +6,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0
 
 
-GPUS_PER_NODE=1 #2
+GPUS_PER_NODE=1
 MODEL_TYPE="7b" #"13b"
 # Change for multinode config
 MASTER_ADDR=eclab40902b # mgmt01
@@ -40,7 +40,7 @@ else
 fi
 
 TPdegree=1
-PPdegree=1 #2
+PPdegree=1
 DPdegree=$(( WORLD_SIZE / TPdegree / PPdegree ))
 
 CHECKPOINT_PATH=llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
@@ -77,8 +77,8 @@ DISTRIBUTED_ARGS="
 GPT_ARGS="
     --tensor-model-parallel-size $TPdegree \
     --pipeline-model-parallel-size $PPdegree \
-    --seq-length 512 \
-    --max-position-embeddings 512 \
+    --seq-length 128 \
+    --max-position-embeddings 128 \
     --tokenizer-type Llama2Tokenizer \
     --tokenizer-model ${TOKENIZER_MODEL} \
     --micro-batch-size 4 \
@@ -104,11 +104,10 @@ GPT_ARGS="
 	--no-masked-softmax-fusion \
 	--attention-softmax-in-fp32 \
     --train-iters 10000 \
-    --recompute-method block \
-    --recompute-granularity full \
-    --recompute-num-layers $(($LAYER_NUM / $PPdegree))
 "
-
+    # --recompute-method block \
+    # --recompute-granularity full \
+    # --recompute-num-layers $(($LAYER_NUM / $PPdegree))
 #--num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree))
 
 LLAMA_ARGS="
@@ -183,9 +182,10 @@ torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     --transformer-impl transformer_engine \
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \
-    $PROF_ARGS \
-    #--no-gradient-accumulation-fusion \
-    #--swap-weight \
-    #--offload-activation
+    $PROF_ARGS
+    # --no-gradient-accumulation-fusion \
+    # --swap-weight \
+    # --offload-activation
+
     # $LMS_ARGS \
 

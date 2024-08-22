@@ -11,6 +11,7 @@ from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
 from megatron.core.transformer.custom_layers.swap_weight_function import SwapTELinear
 from megatron.core.transformer.custom_layers.transformer_engine import _get_extra_te_kwargs
 from megatron.core.transformer.transformer_config import TransformerConfig
+from torchao.dtypes.nf4tensor import linear_nf4, to_nf4
 
 
 def log_gpu_memory_usage():
@@ -99,7 +100,7 @@ class SwapWeightTemplate:
 
     
 
-class SwapWeightLinear(SwapTELinear, SwapWeightTemplate):
+class SwapWeightLinear(SwapTELinear):
     def __init__(
         self,
         input_size: int,
@@ -113,6 +114,7 @@ class SwapWeightLinear(SwapTELinear, SwapWeightTemplate):
         skip_weight_param_allocation: bool,
         tp_comm_buffer_name: str = None,
         swap_weight: bool = True,
+        quantize: bool = False
     ):
         super().__init__(
             input_size=input_size,
@@ -125,15 +127,48 @@ class SwapWeightLinear(SwapTELinear, SwapWeightTemplate):
             skip_weight_param_allocation=skip_weight_param_allocation,
             tp_comm_buffer_name=tp_comm_buffer_name,
         )
-        SwapWeightTemplate.init(self, (self.out_features, self.in_features), config, swap_weight)
-        self.weight_tensor = None
+        self.swap_weight = swap_weight and config.swap_weight
+        self.quantize = quantize
+        self.config = config
         
+        
+        if self.quantize or self.swap_weight:
+            weight_size = (output_size, input_size)
+            self.__delete_all_weight()
+            params_dtype = self.params_dtype
+            if self.swap_weight:
+                weight_swapper = get_weight_swapper()
+                self.swap_weight_id = weight_swapper.register(device=torch.cuda.current_device())
+                device = "cpu"
+            else:
+                device = torch.cuda.current_device()
+
+            self.register_parameter("weight", torch.nn.Parameter(self._create_weight_and_bias(weight_size, device, False, params_dtype)))
+            self.profile = config.profile
+                
+        self.weight_tensor = None
+            
+    def _create_weight_and_bias(self, weight_size, device, require_grad, params_dtype):
+        """
+        Creates a linear weight and bias tensor, using NF4 dtype if we're quantizing
+        (indicated via quantize_base=True).
+        """
+        tmp = torch.empty(weight_size, device=device, requires_grad=require_grad, dtype=params_dtype)
+        weight = tmp if not self.quantize else to_nf4(tmp)
+
+        return weight
+
     def __delete_all_weight(self):
-        SwapWeightTemplate.__delete_all_weight(self)
+        self._parameters.pop("weight")
+        self.weight = None
+        del self.weight
         self.weight_tensor = None
         
     def forward(self, inp: torch.Tensor):
-        return SwapWeightTemplate._forward(self, inp, super().forward, weight_id=self.swap_weight_id if self.swap_weight else None)
+        if self.swap_weight:
+            return super().forward(inp, weight_id=self.swap_weight)
+        else:
+            return super().forward(inp)
 
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
         return SwapWeightTemplate._load_state_dict(self, state_dict, strict, assign)

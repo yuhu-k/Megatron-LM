@@ -74,7 +74,7 @@ class MLP(MegatronModule):
         else:
             self.pre_norm = None
         
-        if config.finetune_method == "lora":
+        if "lora" in config.finetune_method:
 
             if config.gated_linear_unit:
                 self.linear_fc1_1 = build_module(
@@ -169,7 +169,7 @@ class MLP(MegatronModule):
         if self.pre_norm is not None:
             hidden_states = self.pre_norm(hidden_states)
 
-        if self.config.finetune_method == "lora" and self.config.gated_linear_unit:
+        if "lora" in self.config.finetune_method and self.config.gated_linear_unit:
             gate = self.linear_fc1_1(hidden_states)
             up = self.linear_fc1_2(hidden_states)
             intermediate_parallel = torch.cat([gate[0],up[0]], dim=-1)

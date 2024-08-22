@@ -826,7 +826,7 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
                 return r
             m = make_chpt(state_dict['model']['language_model'],"")
             real_m = {}
-            lora=args.finetune_method=="lora"
+            lora="lora" in args.finetune_method
             for key in m:
                 tmp = m[key]
                 key:str = key.replace("encoder","decoder").replace("dense_h_to_4h","linear_fc1")\

@@ -51,7 +51,6 @@ class LoRALinear(SwapWeightLinear):
         tp_comm_buffer_name: str = None,
         finetune_weight: bool = True,
     ):
-        #super().__init__(config)
         super().__init__(
             input_size=input_size,
             output_size=output_size,
@@ -62,6 +61,7 @@ class LoRALinear(SwapWeightLinear):
             skip_bias_add=skip_bias_add,
             skip_weight_param_allocation=skip_weight_param_allocation,
             tp_comm_buffer_name=tp_comm_buffer_name,
+            #quantize=config.finetune_method == "qlora",
         )
         self.requires_grad_(False)
         self.rank = config.finetune_lora_rank
@@ -127,12 +127,104 @@ class LoRALinear(SwapWeightLinear):
         
     
     def forward(self, x):
-        #out = self.weight(x)[0]
         out = super().forward(x)[0]
         if self.finetune_weight:
             lora_out = (self.alpha / self.rank) * self.lora_b(self.lora_a(x)[0])[0]
             out = out + lora_out
         return out, None
+
+# class LoRALinear(MegatronModule):
+#     def __init__(
+#         self,
+#         input_size: int,
+#         output_size: int,
+#         *,
+#         parallel_mode: str,
+#         config: ModelParallelConfig,
+#         init_method: Callable,
+#         bias: bool,
+#         skip_bias_add: bool,
+#         skip_weight_param_allocation: bool,
+#         tp_comm_buffer_name: str = None,
+#         finetune_weight: bool = True,
+#     ):
+#         super().__init__(config)
+#         self.linear = SwapWeightLinear(
+#             input_size=input_size,
+#             output_size=output_size,
+#             parallel_mode=parallel_mode,
+#             config=config,
+#             init_method=init_method,
+#             bias=bias,
+#             skip_bias_add=skip_bias_add,
+#             skip_weight_param_allocation=skip_weight_param_allocation,
+#             tp_comm_buffer_name=tp_comm_buffer_name,
+#         )
+#         self._method = config.finetune_method
+        
+#         # if self._method == "qlora":
+#         #     weight = self._create_weight_and_bias((output_size, input_size), torch.cuda.current_device(), False, config.params_dtype)
+#         #     self.register_parameter("weight", torch.nn.Parameter(weight,requires_grad=False))
+        
+#         self.rank = config.finetune_lora_rank
+#         self.alpha = config.finetune_lora_alpha
+#         self.finetune_weight = finetune_weight
+#         if config.tensor_model_parallel_size != None:
+#             if parallel_mode == "column":
+#                 output_size = int(output_size / config.tensor_model_parallel_size)
+#             elif config.tensor_model_parallel_size != None:
+#                 input_size = int(input_size / config.tensor_model_parallel_size)
+#             self.rank = int(self.rank / config.tensor_model_parallel_size)
+        
+#         if finetune_weight:
+#             self.lora_a = SwapWeightLinear(
+#                     input_size=input_size,
+#                     output_size=self.rank,
+#                     parallel_mode="column",
+#                     config=config,
+#                     init_method=config.init_method,
+#                     bias=bias,
+#                     skip_bias_add=skip_bias_add,
+#                     skip_weight_param_allocation=skip_weight_param_allocation,
+#                     tp_comm_buffer_name=tp_comm_buffer_name,
+#                     swap_weight=False
+#                 )
+#             self.lora_b = SwapWeightLinear(
+#                 input_size=self.rank,
+#                 output_size=output_size,
+#                 parallel_mode="row",
+#                 config=config,
+#                 init_method=init_method,
+#                 bias=bias,
+#                 skip_bias_add=skip_bias_add,
+#                 skip_weight_param_allocation=False,
+#                 tp_comm_buffer_name=tp_comm_buffer_name,
+#                 swap_weight=False
+#             )
+
+#             self.lora_a.to(torch.cuda.current_device())
+#             self.lora_b.to(torch.cuda.current_device())
+        
+    
+#     def forward(self, x):
+#         out = self.weight(x)[0]
+#         # if self._method == "qlora":
+#         #     out = linear_nf4(x, self.weight)
+#         # else:
+#         #     out = self.linear.forward(x)[0]
+#         if self.finetune_weight:
+#             lora_out = (self.alpha / self.rank) * self.lora_b(self.lora_a(x)[0])[0]
+#             out = out + lora_out
+#         return out, None
+    
+#     def _create_weight_and_bias(self, weight_size, device, require_grad, params_dtype):
+#         """
+#         Creates a linear weight and bias tensor, using NF4 dtype if we're quantizing
+#         (indicated via quantize_base=True).
+#         """
+#         weight = to_nf4(torch.empty(weight_size, device=device, requires_grad=require_grad, dtype=params_dtype))
+
+#         return weight
 
 class LoRAColumnParallelLinear(LoRALinear):
     def __init__(

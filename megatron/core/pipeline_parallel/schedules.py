@@ -433,18 +433,19 @@ def forward_backward_no_pipelining(
         ),
         current_microbatch=num_microbatches - 1,
     )
-    total_num_tokens += num_tokens.item()
 
     if not forward_only:
         backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, config)
 
     if config.finalize_model_grads_func is not None and not forward_only:
+        if config.calculate_per_token_loss:
+            total_num_tokens += num_tokens.item()
+        
         # Finalize model grads (perform full grad all-reduce / reduce-scatter for
         # data parallelism and layernorm all-reduce for sequence parallelism).
         config.finalize_model_grads_func(
             [model], total_num_tokens if config.calculate_per_token_loss else None
         )
-
     if config.timers is not None:
         config.timers('forward-backward').stop()
 

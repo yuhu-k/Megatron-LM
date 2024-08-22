@@ -72,7 +72,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[LLaMAModel, meg
             transformer_layer_spec = import_module(args.spec)
         else:
             if use_te:
-                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, lora=args.swap_weight or args.finetune_method == "lora")
+                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, lora=args.swap_weight or "lora" in args.finetune_method)
             else:
                 assert(False), "Please set --use-te"
         with open("/tmp2/yuhu/result.txt", "a") as f:
@@ -187,8 +187,10 @@ def forward_step(data_iterator, model: LLaMAModel):
         tokens, labels, loss_mask, attention_mask, position_ids = get_batch(
             data_iterator)
     timers('batch-generator').stop()
-    recorder = get_recorder()
-    recorder.add_tokens_count(tokens.numel())
+    global_rank = torch.distributed.get_rank()
+    if global_rank == 0:
+        recorder = get_recorder()
+        recorder.add_tokens_count(tokens.numel())
     with stimer:
         output_tensor = model(tokens, position_ids, attention_mask,
                               labels=labels)

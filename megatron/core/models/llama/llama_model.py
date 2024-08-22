@@ -204,6 +204,7 @@ class LLaMAModel(LanguageModule):
             decoder_input = self.embedding(input_ids=input_ids, position_ids=position_ids)
             if self.config.profile:
                 torch.cuda.nvtx.range_pop()
+            decoder_input.requires_grad_(True)
         else:
             # intermediate stage of pipeline
             # decoder will get hidden_states from encoder.input_tensor
@@ -222,7 +223,6 @@ class LLaMAModel(LanguageModule):
         if self.config.profile:
             torch.cuda.nvtx.range_pop()
         
-        decoder_input.requires_grad_(True)
 
         # Run decoder.
         hidden_states = self.decoder(

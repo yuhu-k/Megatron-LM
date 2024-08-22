@@ -45,6 +45,7 @@ from megatron.training import get_args
 from transformer_engine.pytorch.module.linear import Linear
 from swap_manager import get_weight_swapper
 from large_model_gpu import get_pack_hook
+import torchao
 
 
 class _Linear(torch.autograd.Function):
@@ -79,11 +80,17 @@ class _Linear(torch.autograd.Function):
     ) -> torch.Tensor:
         if ctx is not None:
             ctx.store_weight = True
+            #ctx.nf4tensor = False
         if weight == None:
             swapper = get_weight_swapper()
             weight = swapper.get_weight(weight_id)
             if ctx is not None:
                 ctx.store_weight = False
+        # if type(weight) == torchao.dtypes.nf4tensor.NF4Tensor:
+        #     # if ctx is not None:
+        #     #     ctx.nf4tensor = True
+        #     # nf4_weight= weight
+        #     weight = weight.to(torch.bfloat16)
         
         # Make sure input dimensions are compatible
         in_features = weight.shape[-1]
@@ -237,6 +244,7 @@ class _Linear(torch.autograd.Function):
         if is_grad_enabled:
             if ctx is not None and not ctx.store_weight:
                 ctx.w_id = weight_id
+            #store_weight = None if not ctx.store_weight else nf4_weight if ctx.nf4tensor else weight
             fp8_wgrad = fp8 and not fp8_meta["recipe"].override_linear_precision.wgrad
             hook = get_pack_hook()
             ctx.save_for_backward(
@@ -294,6 +302,8 @@ class _Linear(torch.autograd.Function):
             if ctx is not None and ctx.store_weight == False:
                 swapper = get_weight_swapper()
                 weight = swapper.get_weight(ctx.w_id)
+            # if ctx.nf4tensor:
+            #     weight = weight.to(torch.bfloat16)
             
             # if args.lms:
             #     weight = weight.to(torch.cuda.current_device())
