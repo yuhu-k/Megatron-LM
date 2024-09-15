@@ -338,6 +338,9 @@ def save_checkpoint(queue, args):
         sys.argv.append('--fp16')
     elif md.params_dtype == torch.bfloat16:
         sys.argv.append('--bf16')
+        
+    if args.swiglu:
+        sys.argv.append("--swiglu")
 
     if md.output_layer:
         sys.argv.append('--untie-embeddings-and-output-weights')
@@ -418,6 +421,7 @@ def save_checkpoint(queue, args):
     # fake initializing distributed
     mpu.set_tensor_model_parallel_world_size(args.target_tensor_parallel_size)
     mpu.set_pipeline_model_parallel_world_size(args.target_pipeline_parallel_size)
+    mpu.set_virtual_pipeline_model_parallel_world_size(margs.virtual_pipeline_model_parallel_size)
     mpu.set_tensor_model_parallel_rank(0)
     mpu.set_pipeline_model_parallel_rank(0)
     fused_kernels.load(margs)

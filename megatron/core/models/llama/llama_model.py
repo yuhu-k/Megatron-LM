@@ -151,13 +151,6 @@ class LLaMAModel(LanguageModule):
 
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
-        
-        if config.finetune_method == "lora":
-            for name, param in self.named_parameters():
-                if 'lora' not in name:
-                    param.requires_grad = False
-                else:
-                    param.requires_grad_(True)
                     
     def set_input_tensor(self, input_tensor: Tensor) -> None:
         """Sets input tensor to the model.
@@ -259,7 +252,6 @@ class LLaMAModel(LanguageModule):
 
         loss = self.compute_language_model_loss(labels, logits)
         
-        # breakpoint()
 
         return loss
 

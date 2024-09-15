@@ -2,9 +2,9 @@
 
 
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
-MODEL_TYPE="13b-chat"
+MODEL_TYPE="7b"
 
-GLOBAL_SIZE=2 # GPUs' num
+GLOBAL_SIZE=4 # GPUs' num
 
 if [[ $MODEL_TYPE == 7b* ]]; then
     TP=1
@@ -16,10 +16,12 @@ else
     echo "MODEL_TYPE 設定有誤: $MODEL_TYPE"
 fi
 TP=1
-PP=$((${GLOBAL_SIZE} / ${TP}))
+PP=2
+VPP=8
 
-LLAMA_META_FORMAT_DIR="llama-2-${MODEL_TYPE}-hf"
-MEGATRON_FORMAT_DIR="llama-2-${MODEL_TYPE}-me/hf/tp${TP}-pp${PP}"
+LLAMA_META_FORMAT_DIR="/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-hf"
+#LLAMA_META_FORMAT_DIR="/tmp2/Llama-2-${MODEL_TYPE}-hf"
+MEGATRON_FORMAT_DIR="/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf/tp${TP}-pp${PP}-vpp${VPP}"
 TOKENIZER_MODEL="$LLAMA_META_FORMAT_DIR/tokenizer.model"
 
 if [ -d $MEGATRON_FORMAT_DIR ]; then
@@ -30,9 +32,13 @@ python tools/checkpoint/convert.py --model-type GPT \
    --loader llama_mistral \
    --saver megatron \
    --checkpoint-type hf \
-   --model-size llama2-13B \
+   --model-size llama2-7B \
    --load-dir $LLAMA_META_FORMAT_DIR \
    --save-dir ${MEGATRON_FORMAT_DIR} \
    --tokenizer-model ${TOKENIZER_MODEL} \
    --target-tensor-parallel-size ${TP} \
-   --target-pipeline-parallel-size ${PP}
+   --target-pipeline-parallel-size $(($PP * $VPP)) \
+   --bf16 \
+   --target-virtual-pipeline-size $VPP
+
+

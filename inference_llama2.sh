@@ -10,10 +10,10 @@ if [[ $HOSTNAME == *4090* ]]; then
 else
     export NCCL_DEBUG=INFO && export NCCL_SOCKET_IFNAME=enp181s0 && export GLOO_SOCKET_IFNAME=enp181s0
 fi
-MODEL_TYPE="7b"
+MODEL_TYPE="7b-chat"
 DISTRIBUTED_ARGS="--nproc_per_node 1 \
                   --nnodes 1 \
-                  --rdzv_endpoint eclab40902b:6000 \
+                  --rdzv_endpoint eclab40902:6000 \
 		  --rdzv_id 12345 \
 		  --rdzv_backend c10d"
 
@@ -50,7 +50,7 @@ torchrun $DISTRIBUTED_ARGS tools/run_text_generation_server.py   \
 	--tokenizer-type Llama2Tokenizer \
 	--tokenizer-model ${TOKENIZER_MODEL} \
 	--load ${CHECKPOINT_DIR} \
-	--fp16 \
+	--bf16 \
 	--exit-on-missing-checkpoint \
 	--use-checkpoint-args \
 	--no-load-optim \
@@ -66,10 +66,7 @@ torchrun $DISTRIBUTED_ARGS tools/run_text_generation_server.py   \
 	--transformer-impl transformer_engine \
 	--llama-size $MODEL_TYPE \
 	--swiglu \
-	$LLAMA_ARGS \
-	--recompute-method uniform \
-    --recompute-granularity full \
-    --recompute-num-layers 32 \
+	$LLAMA_ARGS
 	#$ARGS
 	# --encoder-num-layers 32 \
 	# --hidden-size 4096 \

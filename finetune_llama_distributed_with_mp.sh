@@ -3,13 +3,13 @@
 #source /tmp2/Megatron-LM/.venv/bin/activation
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0,1
 
 
-GPUS_PER_NODE=1
+GPUS_PER_NODE=2
 MODEL_TYPE="7b" #"13b"
 # Change for multinode config
-MASTER_ADDR=eclab40902b # mgmt01
+MASTER_ADDR=eclab40902
 MASTER_PORT=6000
 NNODES=1 #1
 WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
@@ -40,10 +40,16 @@ else
 fi
 
 TPdegree=1
-PPdegree=1
+PPdegree=2
 DPdegree=$(( WORLD_SIZE / TPdegree / PPdegree ))
+VPPdegree=8
 
-CHECKPOINT_PATH=llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
+if [[ $VPPdegree == 1 ]]; then
+    CHECKPOINT_PATH=/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
+else
+    CHECKPOINT_PATH=/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}-vpp${VPPdegree}
+fi
+#CHECKPOINT_PATH=/tmp2/llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
 DATA_PATH=/tmp2/Megatron-LM/dataset2/llama-data_text_document
 RESULTS_PATH=/tmp2/Megatron-LM/results/$HOSTNAME/$TIME
 TOKENIZER_MODEL=/tmp2/Megatron-LM/tokenizer.model
@@ -77,12 +83,12 @@ DISTRIBUTED_ARGS="
 GPT_ARGS="
     --tensor-model-parallel-size $TPdegree \
     --pipeline-model-parallel-size $PPdegree \
-    --seq-length 128 \
-    --max-position-embeddings 128 \
+    --seq-length 2048 \
+    --max-position-embeddings 2048 \
     --tokenizer-type Llama2Tokenizer \
     --tokenizer-model ${TOKENIZER_MODEL} \
     --micro-batch-size 4 \
-    --global-batch-size 4 \
+    --global-batch-size 16 \
     --lr 0.00015 \
     --train-iters 100 \
     --lr-decay-iters 320000 \
@@ -104,21 +110,25 @@ GPT_ARGS="
 	--no-masked-softmax-fusion \
 	--attention-softmax-in-fp32 \
     --train-iters 10000 \
+    --recompute-method block \
+    --recompute-granularity full \
+    --recompute-num-layers $(($LAYER_NUM / $PPdegree)) \
+    --num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree / $VPPdegree))
 "
-    # --recompute-method block \
-    # --recompute-granularity full \
-    # --recompute-num-layers $(($LAYER_NUM / $PPdegree))
-#--num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree))
 
 LLAMA_ARGS="
     --llama-size ${MODEL_TYPE} \
     --finetune-method lora \
-    --swiglu
+    --swiglu \
+    --finetune-mlp \
+    --overlap-dequantize \
 "
+
+
 
 NSYS_ARGS="
     --force-overwrite true \
-    -o /tmp2/yuhu/${HOSTNAME}_${TIME} \
+    -o /tmp2/yuhu/${HOSTNAME}_${MODEL_TYPE}_${TIME} \
     --capture-range cudaProfilerApi \
     --capture-range-end stop-shutdown \
     --trace=nvtx,cuda,cudnn \
@@ -160,6 +170,14 @@ if [ -d $RESULTS_PATH ]; then
     mkdir -p $RESULTS_PATH
 fi
 
+if [ -e /tmp2/yuhu-1.txt ]; then
+    rm /tmp2/yuhu-1.txt
+fi
+
+if [ -e /tmp2/yuhu-0.txt ]; then
+    rm /tmp2/yuhu-0.txt
+fi
+
 echo "nsys profile $NSYS_ARGS \
     torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     $GPT_ARGS \
@@ -182,9 +200,9 @@ torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     --transformer-impl transformer_engine \
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \
-    $PROF_ARGS
+    $PROF_ARGS \
     # --no-gradient-accumulation-fusion \
-    # --swap-weight \
+    # --swap-weight
     # --offload-activation
 
     # $LMS_ARGS \

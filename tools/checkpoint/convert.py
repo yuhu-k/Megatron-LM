@@ -122,7 +122,7 @@ def main():
                         help='Directory to load model checkpoint from')
     parser.add_argument('--save-dir', type=str, required=True,
                         help='Directory to save model checkpoint to')
-    parser.add_argument('--max-queue-size', type=int, default=50,
+    parser.add_argument('--max-queue-size', type=int, default=200,
                         help='Maximum number of tensors in the queue')
     parser.add_argument('--no-checking', action='store_false',
                         help='Do not perform checking on the name and ordering of weights',
@@ -138,14 +138,15 @@ def main():
     args = parser.parse_args()
 
     queue = mp.Queue(maxsize=args.max_queue_size)
+    event = mp.Event()
 
     print("Starting saver...")
-    saver_proc = mp.Process(target=saver.save_checkpoint, args=(queue, args))
+    saver_proc = mp.Process(target=saver.save_checkpoint, args=(queue, event, args))
     saver_proc.start()
 
     print(args)
     print("Starting loader...")
-    loader.load_checkpoint(queue, args)
+    loader.load_checkpoint(queue, event, args)
 
     print("Waiting for saver to complete...")
     saver_proc.join()

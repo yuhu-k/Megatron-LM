@@ -522,13 +522,15 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
             if value.shape == key.shape and value.shape[0] == 1 and value.stride() != key.stride():
                 value = value.as_strided(value.shape, key.stride())
         
-        q = query.permute(1, 2, 0, 3)
-        k = key.permute(1, 2, 0, 3)
-        v = value.permute(1, 2, 0, 3)
-        
-        output = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=not dot_func)
+        if dot_func:
+            q = query.permute(1, 2, 0, 3)
+            k = key.permute(1, 2, 0, 3)
+            v = value.permute(1, 2, 0, 3)
+            print(q.size(), k.size(), v.size(), query.size(), key.size(), value.size())
+            
+            output = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=False)
 
-        return output
+            return output
         
         
 

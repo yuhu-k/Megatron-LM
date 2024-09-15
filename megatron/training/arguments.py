@@ -1186,9 +1186,12 @@ def _add_training_args(parser):
     group.add_argument('--finetune-lora-quantize-base', action='store_false',
                         help="Enable the fine-tuning lora quantization",
                         dest='finetune_lora_quantize_base')
-    group.add_argument('--finetune-mlp', action='store_false',
-                        help="Enable the fine-tuning mlp",
+    group.add_argument('--finetune-mlp', action='store_true', default=False,
+                        help="Enable the fine-tuning mlp layer",
                         dest='finetune_mlp')
+    
+    group.add_argument('--overlap-dequantize', action='store_true', default=False,
+                        help="Overlap the dequantize time of qlora")
 
     return parser
 

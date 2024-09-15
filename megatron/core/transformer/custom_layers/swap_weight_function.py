@@ -45,7 +45,7 @@ from megatron.training import get_args
 from transformer_engine.pytorch.module.linear import Linear
 from swap_manager import get_weight_swapper
 from large_model_gpu import get_pack_hook
-import torchao
+from tensor_manager import chk_tensor_registered
 
 
 class _Linear(torch.autograd.Function):
@@ -78,19 +78,28 @@ class _Linear(torch.autograd.Function):
         ub_split_ag: bool,
         weight_id: int = None,
     ) -> torch.Tensor:
+        offload_weight = False
         if ctx is not None:
             ctx.store_weight = True
-            #ctx.nf4tensor = False
+            ctx.nf4tensor = False
+            store_weight = True
         if weight == None:
             swapper = get_weight_swapper()
             weight = swapper.get_weight(weight_id)
             if ctx is not None:
                 ctx.store_weight = False
-        # if type(weight) == torchao.dtypes.nf4tensor.NF4Tensor:
-        #     # if ctx is not None:
-        #     #     ctx.nf4tensor = True
-        #     # nf4_weight= weight
-        #     weight = weight.to(torch.bfloat16)
+                store_weight = False
+        if chk_tensor_registered(weight):
+            # if ctx is not None:
+            #     ctx.nf4tensor = True
+            #     if store_weight:
+            #         ctx.nf4_weight = weight
+            # weight = weight.to(inp.dtype)
+            offload_weight = True
+            weight_for_save = weight
+            weight = weight.get_computable_form()
+            torch.cuda.synchronize()
+
         
         # Make sure input dimensions are compatible
         in_features = weight.shape[-1]
@@ -244,14 +253,13 @@ class _Linear(torch.autograd.Function):
         if is_grad_enabled:
             if ctx is not None and not ctx.store_weight:
                 ctx.w_id = weight_id
-            #store_weight = None if not ctx.store_weight else nf4_weight if ctx.nf4tensor else weight
             fp8_wgrad = fp8 and not fp8_meta["recipe"].override_linear_precision.wgrad
             hook = get_pack_hook()
             ctx.save_for_backward(
                 *hook.my_pack_hook(
                 inputmat_no_fp8 if weight.requires_grad and not fp8_wgrad else None,
                 inputmat_t if weight.requires_grad and fp8_wgrad else None,
-                weight if ctx.store_weight else None,
+                weight_for_save if offload_weight else weight,
                 weight_t_fp8 if fp8 else None,
                 fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,)
             )
@@ -269,7 +277,8 @@ class _Linear(torch.autograd.Function):
             ctx.ub_split_ag = ub_split_ag
             ctx.tp_size = tp_size
             ctx.requires_dgrad = inp.requires_grad
-
+        # if offload_weight:
+        #     weight_for_save.offload()
         # Row Parallel Linear
         if ub_split_rs:
             out = rs_out
@@ -277,7 +286,6 @@ class _Linear(torch.autograd.Function):
             out, _ = reduce_scatter_along_first_dim(out, tp_group)
         elif parallel_mode == "row" and tensor_parallel:
             out, _ = allreduce(out, tp_group)
-
         # [*, in_features] -> [*, out_features] except first dimension changes for SP
         return out.view(-1, *inp.shape[1:-1], out.shape[-1])
 
@@ -298,12 +306,16 @@ class _Linear(torch.autograd.Function):
                 fwd_scale_inverses,
             ) = hook.my_unpack_hook(*ctx.saved_tensors)
             #args = get_args()
-            
+            offload_weight = False
             if ctx is not None and ctx.store_weight == False:
                 swapper = get_weight_swapper()
                 weight = swapper.get_weight(ctx.w_id)
-            # if ctx.nf4tensor:
-            #     weight = weight.to(torch.bfloat16)
+            if chk_tensor_registered(weight):
+                # weight = ctx.nf4_weight.to(grad_output.dtype)
+                weight_tmp = weight
+                offload_weight = True
+                weight = weight.get_computable_form()
+                torch.cuda.synchronize()
             
             # if args.lms:
             #     weight = weight.to(torch.cuda.current_device())
@@ -450,7 +462,8 @@ class _Linear(torch.autograd.Function):
 
             if not ctx.use_bias:
                 grad_bias = None
-
+        # if offload_weight:
+        #     weight_tmp.offload()
 
         return (
             wgrad if require_grad else None,

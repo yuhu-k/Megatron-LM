@@ -132,7 +132,7 @@ class Attention(MegatronModule, ABC):
                 attention_mask,
                 attn_mask_type=attn_mask_type,
                 packed_seq_params=packed_seq_params,
-                dot_func=self.aaa != 0
+                dot_func=False,
             )
             return output_
 
@@ -344,12 +344,11 @@ class Attention(MegatronModule, ABC):
         # =================
 
         output, bias = self.linear_proj(core_attn_out)
-        
         if self.config.profile:
             torch.cuda.nvtx.range_pop()
             timer.pop()
-
-        self.aaa += 1
+        if not self.training:
+            self.aaa += 1
         return output, bias
 
 

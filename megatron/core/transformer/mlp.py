@@ -73,7 +73,6 @@ class MLP(MegatronModule):
             )
         else:
             self.pre_norm = None
-        
         if "lora" in config.finetune_method:
 
             if config.gated_linear_unit:
@@ -88,7 +87,7 @@ class MLP(MegatronModule):
                     skip_bias_add=True,
                     is_expert=is_expert,
                     tp_comm_buffer_name='fc1-1',
-                    finetune_weight=False,
+                    finetune_weight=config.finetune_mlp,
                 )
                 self.linear_fc1_2 = build_module(
                     submodules.linear_fc1,
@@ -101,7 +100,7 @@ class MLP(MegatronModule):
                     skip_bias_add=True,
                     is_expert=is_expert,
                     tp_comm_buffer_name='fc1-2',
-                    finetune_weight=False,
+                    finetune_weight=config.finetune_mlp,
                 )
             else:
                 self.linear_fc1 = build_module(
@@ -115,6 +114,7 @@ class MLP(MegatronModule):
                     skip_bias_add=True,
                     is_expert=is_expert,
                     tp_comm_buffer_name='fc1',
+                    finetune_weight=config.finetune_mlp,
                 )
             self.linear_fc2 = build_module(
                 submodules.linear_fc2,
@@ -127,7 +127,7 @@ class MLP(MegatronModule):
                 skip_bias_add=True,
                 is_expert=is_expert,
                 tp_comm_buffer_name='fc2',
-                finetune_weight=False,
+                finetune_weight=config.finetune_mlp,
             )
         else:
             self.linear_fc1 = build_module(
@@ -170,10 +170,10 @@ class MLP(MegatronModule):
             hidden_states = self.pre_norm(hidden_states)
 
         if "lora" in self.config.finetune_method and self.config.gated_linear_unit:
-            gate = self.linear_fc1_1(hidden_states)
-            up = self.linear_fc1_2(hidden_states)
-            intermediate_parallel = torch.cat([gate[0],up[0]], dim=-1)
-            bias_parallel = gate[1] + up[1] if gate[1] != None and up[1] != None else None
+            gate, gate_bias = self.linear_fc1_1(hidden_states)
+            up, up_bias = self.linear_fc1_2(hidden_states)
+            intermediate_parallel = torch.cat([gate,up], dim=-1)
+            bias_parallel = gate_bias + up_bias if gate_bias != None and up_bias != None else None
         else:
             intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
 

@@ -75,11 +75,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[LLaMAModel, meg
                 transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, lora=args.swap_weight or "lora" in args.finetune_method)
             else:
                 assert(False), "Please set --use-te"
-        with open("/tmp2/yuhu/result.txt", "a") as f:
-            allocated = torch.cuda.memory_allocated() / 1024**3
-            reserved = torch.cuda.memory_reserved() / 1024**3
-            f.write(f"Allocated GPU memory before build model: {allocated:.2f} GB\n")
-            f.write(f"Reserved GPU memory before build model: {reserved:.2f} GB\n")
+
         model = LLaMAModel(
             config=config,
             transformer_layer_spec=transformer_layer_spec,
@@ -93,13 +89,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[LLaMAModel, meg
             position_embedding_type=args.position_embedding_type,
             rotary_percent=args.rotary_percent,
         )
-        with open("/tmp2/yuhu/result.txt", "a") as f:
-            allocated = torch.cuda.memory_allocated() / 1024**3
-            reserved = torch.cuda.memory_reserved() / 1024**3
-            f.write(f"Allocated GPU memory after build model: {allocated:.2f} GB\n")
-            f.write(f"Reserved GPU memory after build model: {reserved:.2f} GB\n")
-    if torch.distributed.get_rank() == 3:
-        print(model)
+
     return model
 
 
@@ -138,7 +128,7 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
         from megatron.training.global_vars import get_self_define_timer
         timer = get_self_define_timer()
         timer.push("compute loss")
-
+    
     losses = output_tensor.float()
     loss_mask = loss_mask.view(-1).float()
     total_tokens = loss_mask.sum()
@@ -188,7 +178,7 @@ def forward_step(data_iterator, model: LLaMAModel):
             data_iterator)
     timers('batch-generator').stop()
     global_rank = torch.distributed.get_rank()
-    if global_rank == 0:
+    if global_rank == 0 and tokens != None:
         recorder = get_recorder()
         recorder.add_tokens_count(tokens.numel())
     with stimer:
@@ -240,7 +230,7 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
     if args.mock_data:
         dataset_type = MockGPTDataset
     else:
-        dataset_type = LLaMADataset
+        dataset_type = GPTDataset
 
     print_rank_0("> building train, validation, and test datasets for GPT ...")
 

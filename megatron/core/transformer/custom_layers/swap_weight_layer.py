@@ -11,7 +11,8 @@ from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
 from megatron.core.transformer.custom_layers.swap_weight_function import SwapTELinear
 from megatron.core.transformer.custom_layers.transformer_engine import _get_extra_te_kwargs
 from megatron.core.transformer.transformer_config import TransformerConfig
-from torchao.dtypes.nf4tensor import linear_nf4, to_nf4
+from torchao.dtypes.nf4tensor import to_nf4
+from tensor_manager import register_tensor
 
 
 def log_gpu_memory_usage():
@@ -72,7 +73,7 @@ class SwapWeightTemplate:
             weight_swapper.update_weight(self.weight, self.swap_weight_id)
             self.__delete_all_weight()
             self._set_weight(weight_swapper.get_weight_cpu(self.swap_weight_id))
-            self.requires_grad_(False)
+            self.weight.requires_grad = False
         return result
     
     def _forward(self, inp, forward_function, weight=None, weight_id=None):
@@ -114,7 +115,7 @@ class SwapWeightLinear(SwapTELinear):
         skip_weight_param_allocation: bool,
         tp_comm_buffer_name: str = None,
         swap_weight: bool = True,
-        quantize: bool = False
+        quantize: bool = True
     ):
         super().__init__(
             input_size=input_size,
@@ -143,10 +144,9 @@ class SwapWeightLinear(SwapTELinear):
             else:
                 device = torch.cuda.current_device()
 
-            self.register_parameter("weight", torch.nn.Parameter(self._create_weight_and_bias(weight_size, device, False, params_dtype)))
+            self._create_weight_and_bias(weight_size, device, False, params_dtype)
             self.profile = config.profile
                 
-        self.weight_tensor = None
             
     def _create_weight_and_bias(self, weight_size, device, require_grad, params_dtype):
         """
@@ -155,8 +155,7 @@ class SwapWeightLinear(SwapTELinear):
         """
         tmp = torch.empty(weight_size, device=device, requires_grad=require_grad, dtype=params_dtype)
         weight = tmp if not self.quantize else to_nf4(tmp)
-
-        return weight
+        self.register_parameter("weight", torch.nn.Parameter(weight))
 
     def __delete_all_weight(self):
         self._parameters.pop("weight")
@@ -166,17 +165,22 @@ class SwapWeightLinear(SwapTELinear):
         
     def forward(self, inp: torch.Tensor):
         if self.swap_weight:
-            return super().forward(inp, weight_id=self.swap_weight)
+            return super().forward(inp, weight_id=self.swap_weight_id)
         else:
             return super().forward(inp)
-
-    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
-        return SwapWeightTemplate._load_state_dict(self, state_dict, strict, assign)
     
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs):
-        return SwapWeightTemplate._load_state_dict(self, state_dict, prefix, local_metadata, strict,
-                              missing_keys, unexpected_keys, error_msgs, super()._load_from_state_dict)
+        result = super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs)
+        if self.swap_weight:
+            weight_swapper = get_weight_swapper()
+            weight_swapper.update_weight(self.weight, self.swap_weight_id)
+            self.weight.requires_grad = False
+        if self.quantize or self.swap_weight:
+            register_tensor(self.weight)
+        return result
+
             
 class SwapWeightLayerNorm(te.pytorch.LayerNorm, SwapWeightTemplate):
     def __init__(
@@ -199,9 +203,6 @@ class SwapWeightLayerNorm(te.pytorch.LayerNorm, SwapWeightTemplate):
     
     def forward(self, inp: torch.Tensor):
         return SwapWeightTemplate._forward(self, inp, super().forward)
-
-    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
-        return SwapWeightTemplate._load_state_dict(state_dict, strict, assign)
     
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs):

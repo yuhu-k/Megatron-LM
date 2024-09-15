@@ -2,13 +2,19 @@
 
 """Dataloaders."""
 
-
+from typing import List, Tuple, Union
 import random
 import torch
 import numpy as np
 from torch.utils.data import Dataset
 from megatron.training import get_args
 from megatron.core import mpu
+from functools import partial
+from megatron.core.datasets.llama_dataset import LLaMADataset
+import torch.nn.functional as F
+CROSS_ENTROPY_IGNORE_IDX = -100
+
+# TokenPair is a pair (tuple) of two lists: tokenized text inputs and labels.
 
 
 def build_pretraining_data_loader(dataset, consumed_samples):
@@ -49,6 +55,11 @@ def build_pretraining_data_loader(dataset, consumed_samples):
                                        num_workers=args.num_workers,
                                        pin_memory=True,
                                        persistent_workers=True if args.num_workers > 0 else False,
+                                       collate_fn=partial(
+                                            padded_collate,
+                                            padding_idx=0,
+                                            config=dataset.config
+                                        ) if type(dataset) == LLaMADataset else None ,
                                        )
 
 class MegatronPretrainingSampler:
@@ -190,3 +201,116 @@ class MegatronPretrainingRandomSampler:
                 self.consumed_samples += self.micro_batch_times_data_parallel_size
                 yield batch
                 batch = []
+
+def padded_collate(
+    batch: List[dict],
+    padding_idx: int = 0,
+    config = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pad a batch of sequences to the longest sequence length in the batch, and
+    convert integer lists to tensors.
+
+    Args:
+        batch {
+                "tokens": tokens,
+                "labels": labels,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+            }: A list of tuples containing input, label pairs.
+        padding_idx (int): Padding index for input ids. Defaults to 0.
+        ignore_idx (int): Padding index for labels. Defaults to -100.
+
+    Returns:
+        Collated input and label tensors.
+
+    Example:
+        >>> token_pairs = [
+        >>>    ([1, 2, 3], [4, 5, 6]),
+        >>>    ([7,], [10,],),
+        >>> ]
+        >>> inputs, labels = padded_collate(
+        >>>    batch=token_pairs,
+        >>>    padding_idx=padding_idx,
+        >>>    ignore_idx=ignore_idx,
+        >>> )
+        >>> inputs
+        >>> tensor([[1, 2, 3], [7, 0, 0]])
+        >>> labels
+        >>> tensor([[4,5,6], [10,-100,-100]])
+    """
+    import numpy
+    def padding(inputs: list[torch.Tensor], padding_value: int):
+
+        max_len = 0
+        for input in inputs:
+            max_len = len(input) if len(input) > max_len else max_len
+        samples = []
+        for input in inputs:
+            if len(input) < max_len:
+                tmp = torch.full((max_len - len(input),), padding_value)
+                input = torch.concatenate([input, tmp],dim=0)
+            samples.append(input)
+        #result = torch.stack(samples)
+        return samples
+
+    def padding_atten(inputs: list[torch.Tensor], padding_value: int):
+
+        max_len = 0
+        for input in inputs:
+            max_len = input.size()[1] if input.size()[1] > max_len else max_len
+        samples = []
+        for input in inputs:
+            if input.size()[1] < max_len:
+                # (left, right, top, bottom) 的 padding 設定
+                padding = (0, max_len - input.size()[1], 0, max_len - input.size()[1])
+                input = F.pad(input, padding, value = padding_value)
+            samples.append(input)
+        #result = torch.stack(samples)
+        return samples
+            
+    input_ids = padding(
+        [x["tokens"] for x in batch],
+        padding_value=padding_idx,
+    )
+    labels = padding(
+        [x["labels"] for x in batch],
+        padding_value=padding_idx,
+    )
+    
+    from torch.utils.data import _utils
+    from megatron.core.datasets.gpt_dataset import _get_ltor_masks_and_position_ids
+    tmp_list = []
+    for i in range(len(batch)):
+        attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
+            input_ids[i],
+            config.tokenizer.eod,
+            config.reset_position_ids,
+            config.reset_attention_mask,
+            config.eod_mask_loss,
+            config.create_attention_mask,
+        )
+        # For padded sequences, mask the loss
+        loss_mask[labels == -1] = 0.0
+        
+        # For padded sequences, ensure the embedding layer can map the token ID
+        input_ids[i][input_ids[i] == -1] = 0
+        labels[i][labels == -1] = 0
+        
+        if batch[0].get("attention_mask") != None:
+            tmp_list.append(
+                {"tokens":input_ids[i], 
+                "labels": labels[i],
+                "attention_mask" : attention_mask,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+                }
+            )
+        else:
+            tmp_list.append(
+                {"tokens":input_ids[i], 
+                "labels": labels[i],
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+                }
+            )
+    return _utils.collate.default_collate(tmp_list)

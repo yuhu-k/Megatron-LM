@@ -61,7 +61,7 @@ class LoRALinear(SwapWeightLinear):
             skip_bias_add=skip_bias_add,
             skip_weight_param_allocation=skip_weight_param_allocation,
             tp_comm_buffer_name=tp_comm_buffer_name,
-            #quantize=config.finetune_method == "qlora",
+            quantize=finetune_weight and config.finetune_method == "qlora",
         )
         self.requires_grad_(False)
         self.rank = config.finetune_lora_rank
@@ -85,7 +85,8 @@ class LoRALinear(SwapWeightLinear):
                     skip_bias_add=skip_bias_add,
                     skip_weight_param_allocation=skip_weight_param_allocation,
                     tp_comm_buffer_name=tp_comm_buffer_name,
-                    swap_weight=False
+                    swap_weight=False,
+                    quantize=False
                 )
             self.lora_b = SwapWeightLinear(
                 input_size=self.rank,
@@ -97,7 +98,8 @@ class LoRALinear(SwapWeightLinear):
                 skip_bias_add=skip_bias_add,
                 skip_weight_param_allocation=False,
                 tp_comm_buffer_name=tp_comm_buffer_name,
-                swap_weight=False
+                swap_weight=False,
+                quantize=False
             )
             # self.lora_a = TEColumnParallelLinear(
             #     input_size=input_size,
@@ -281,7 +283,7 @@ class LoRARowParallelLinear(LoRALinear):
         skip_bias_add: bool,
         is_expert: bool,
         tp_comm_buffer_name: str = None,
-        finetune_weight: bool = True
+        finetune_weight: bool = True,
     ):
         
         if not input_is_parallel:

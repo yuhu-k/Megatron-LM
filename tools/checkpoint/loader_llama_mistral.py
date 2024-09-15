@@ -12,6 +12,7 @@ import gc
 import shutil
 from tqdm import tqdm
 import types
+from multiprocessing.synchronize import Event
 
 NUM_SHARDS = {
     "llama2-7B": 1,
@@ -418,7 +419,7 @@ def load_checkpoint_to_model(args):
     return model
 
 
-def _load_checkpoint(queue, args):
+def _load_checkpoint(queue, event: Event, args):
     verify_transformers_version()
 
     # Search in directory above this.
@@ -580,6 +581,12 @@ def _load_checkpoint(queue, args):
         print(f"sending {name}")
         msg["name"] = name
         queue.put(msg)
+        # 等待接收方確認接收
+        event.wait()
+        
+        # 重置事件狀態
+        event.clear()
+
 
     # Send embeddings.
     message = {
@@ -663,9 +670,9 @@ def _load_checkpoint(queue, args):
         shutil.rmtree(os.path.join(args.save_dir, 'tmp'))
 
 
-def load_checkpoint(queue, args):
+def load_checkpoint(queue, event, args):
     try:
-        _load_checkpoint(queue, args)
+        _load_checkpoint(queue, event, args)
     except:
         queue.put("exit")
         raise

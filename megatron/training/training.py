@@ -65,6 +65,7 @@ import large_model_gpu as lms
 from swap_manager import init_weight_swapper, get_weight_swapper
 import time
 from training_speed_recorder import get_recorder, init_recorder
+from tensor_manager import init_tensor_manager, finish_warmup
 
 stimer = StragglerDetector()
 
@@ -207,6 +208,7 @@ def pretrain(train_valid_test_dataset_provider,
         device = ipc_object.device
         lms.init(device, args, enable_multi_gpu=True, ipc_object=ipc_object, skip_sync_iterations=-1)
     lms.init_pack_hook(args.profile, args.lms, args.lms_swap_nonblocking)
+    init_tensor_manager()
     if torch.distributed.get_rank() == 0:
         init_recorder()
         
@@ -233,9 +235,6 @@ def pretrain(train_valid_test_dataset_provider,
         time.time() - _TRAIN_START_TIME))
     print_datetime('after megatron is initialized')
 
-    args = get_args()
-    timers = get_timers()
-
     one_logger = get_one_logger()
     if one_logger:
         one_logger.log_metrics({
@@ -247,12 +246,7 @@ def pretrain(train_valid_test_dataset_provider,
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(
         model_provider, model_type)
     timers('model-and-optimizer-setup').stop()
-    if "lora" in args.finetune_method:
-        for name, param in model[0].named_parameters():
-            if "lora" in name:
-                param.requires_grad_(True)
-            else:
-                param.requires_grad_(False)
+
     print_datetime('after model, optimizer, and learning rate '
                    'scheduler are built')
     config = get_model_config(model[0])
@@ -540,12 +534,6 @@ def setup_model_and_optimizer(model_provider_func,
 
     model = get_model(model_provider_func, model_type)
     unwrapped_model = unwrap_model(model)
-    # if "lora" in args.finetune_method:
-    #     for name, param in model[0].named_parameters():
-    #         if "lora" in name:
-    #             param.requires_grad_(True)
-    #         else:
-    #             param.requires_grad_(False)
 
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
@@ -553,6 +541,13 @@ def setup_model_and_optimizer(model_provider_func,
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
     config.timers = timers
+    if "lora" in args.finetune_method:
+        for mod in model:
+            for name, param in mod.named_parameters():
+                if "lora" in name:
+                    param.requires_grad_(True)
+                else:
+                    param.requires_grad_(False)
     optimizer = get_megatron_optimizer(config, model, no_wd_decay_cond,
                                        scale_lr_cond, lr_mult)
     opt_param_scheduler = get_optimizer_param_scheduler(optimizer)
@@ -574,7 +569,27 @@ def setup_model_and_optimizer(model_provider_func,
         unwrapped_model[0].init_state_dict_from_bert()
         if args.fp16:
             optimizer.reload_model_params()
+            
+    total_optimizer_size_in_bytes = 0
+    total_model_size_in_bytes = 0
+    for mod in model:
+        for name, param in mod.named_parameters():
+            param_size_in_bytes = param.numel() * param.element_size()
+            total_model_size_in_bytes += param_size_in_bytes
+    
+    print(f"Total Parameter size: {total_model_size_in_bytes / 1024 / 1024 / 1024} GB")
+    for param_group in optimizer.param_groups:
+        for param in param_group['params']:
+            param_size = param.numel() * param.element_size()
+            total_optimizer_size_in_bytes += param_size
 
+            if param in optimizer.state:
+                for state_key, state_value in optimizer.state[param].items():
+                    if torch.is_tensor(state_value):
+                        state_size = state_value.numel() * state_value.element_size()
+                        total_optimizer_size_in_bytes += state_size
+
+    print(f"Total optimizer size: {total_optimizer_size_in_bytes / 1024 / 1024} MB")
     return model, optimizer, opt_param_scheduler
 
 
@@ -623,6 +638,7 @@ def train_step(forward_step_func, data_iterator,
         timer.push("opt update")
     update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
     if config.profile:
+        torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
         timer.pop()
     timers('optimizer').stop()
@@ -1252,11 +1268,18 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             device = torch.cuda.current_device()
             print(f"Max memory allocated on cuda:{device}: {torch.cuda.max_memory_allocated(device)/(1024**3)} GB")
             self_timer.end(args.profile_output)
+            attention_time = self_timer.get_tag_record("attention")
+            print(f"Time of proceeding attention: max {attention_time['max_time']}, min {attention_time['min_time']}, average {attention_time['accumulate_time']/attention_time['counter']}")
+            mlp_time = self_timer.get_tag_record("mlp")
+            print(f'Time of proceeding mlp: max {mlp_time["max_time"]}, min {mlp_time["min_time"]}, average {mlp_time["accumulate_time"]/mlp_time["counter"]}')
             torch.cuda.cudart().cudaProfilerStop()
 
         if args.manual_gc:
             if args.manual_gc_interval != 0 and iteration % args.manual_gc_interval == 0:
                 gc.collect()
+        
+        if args.finetune_method == "qlora":
+            finish_warmup()
         
         if args.swap_weight:
             swapper = get_weight_swapper()
