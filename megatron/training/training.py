@@ -553,10 +553,16 @@ def setup_model_and_optimizer(model_provider_func,
     opt_param_scheduler = get_optimizer_param_scheduler(optimizer)
 
     if args.load is not None or args.pretrained_checkpoint is not None:
+        start_t = time.time()
         timers('load-checkpoint', log_level=0).start(barrier=True)
         args.iteration, args.num_floating_point_operations_so_far = load_checkpoint(
             model, optimizer, opt_param_scheduler)
         timers('load-checkpoint').stop(barrier=True)
+        load_chk_time = time.time() - start_t
+        if load_chk_time >= 1:
+            print(f"Time to load checkpoint: {load_chk_time} s")
+        else:
+            print(f"Time to load checkpoint: {load_chk_time * 1000} ms")
         timers.log(['load-checkpoint'])
     else:
         args.iteration = 0
@@ -590,6 +596,9 @@ def setup_model_and_optimizer(model_provider_func,
                         total_optimizer_size_in_bytes += state_size
 
     print(f"Total optimizer size: {total_optimizer_size_in_bytes / 1024 / 1024} MB")
+    torch.cuda.synchronize()
+    device = torch.cuda.current_device()
+    print(f"Max memory allocated on cuda:{device}: {torch.cuda.memory_allocated(device)/(1024**3)} GB")
     return model, optimizer, opt_param_scheduler
 
 
@@ -638,7 +647,8 @@ def train_step(forward_step_func, data_iterator,
         timer.push("opt update")
     update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
     if config.profile:
-        torch.cuda.synchronize()
+        #torch.cuda.synchronize()
+        torch.cuda.current_stream().synchronize()
         torch.cuda.nvtx.range_pop()
         timer.pop()
     timers('optimizer').stop()
@@ -915,6 +925,8 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
         total_loss_dict[skipped_iters_key] = 0
         total_loss_dict[nan_iters_key] = 0
         print_rank_last(log_string)
+        # with open("/tmp2/loss.csv","a") as f:
+        #     f.write(f"{args.topk_k_rate if args.topk_k_rate != None else 1}, {iteration}, {avg}\n")
         if report_memory_flag and learning_rate > 0.:
             # Report memory after optimizer state has been initialized.
             if torch.distributed.get_rank() == 0:
@@ -1179,7 +1191,6 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
            (iteration % args.adlr_autoresume_interval == 0):
             check_adlr_autoresume_termination(iteration, model, optimizer,
                                               opt_param_scheduler)
-
         # Evaluation
         if args.eval_interval and iteration % args.eval_interval == 0 and \
            args.do_valid:
@@ -1265,13 +1276,22 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             if global_rank == 0:
                 recorder.end()
                 print(f"average finetuning speed: {recorder.get_speed() } token/sec")
-            device = torch.cuda.current_device()
-            print(f"Max memory allocated on cuda:{device}: {torch.cuda.max_memory_allocated(device)/(1024**3)} GB")
-            self_timer.end(args.profile_output)
-            attention_time = self_timer.get_tag_record("attention")
-            print(f"Time of proceeding attention: max {attention_time['max_time']}, min {attention_time['min_time']}, average {attention_time['accumulate_time']/attention_time['counter']}")
-            mlp_time = self_timer.get_tag_record("mlp")
-            print(f'Time of proceeding mlp: max {mlp_time["max_time"]}, min {mlp_time["min_time"]}, average {mlp_time["accumulate_time"]/mlp_time["counter"]}')
+            with open("/tmp2/yuhu.txt", "a") as f:
+                device = torch.cuda.current_device()
+                s1 = f"Max memory allocated on cuda:{device}: {torch.cuda.max_memory_allocated(device)/(1024**3)} GB"
+                self_timer.end(args.profile_output)
+                attention_time = self_timer.get_tag_record("attention")
+                s2 = f"Time of proceeding attention: max {attention_time['max_time']}, min {attention_time['min_time']}, average {attention_time['accumulate_time']/attention_time['counter']}"
+                mlp_time = self_timer.get_tag_record("mlp")
+                s3 = f'Time of proceeding mlp: max {mlp_time["max_time"]}, min {mlp_time["min_time"]}, average {mlp_time["accumulate_time"]/mlp_time["counter"]}'
+                f.write(f"device {torch.cuda.current_device()}:\n{s1}\n{s2}\n{s3}\n")
+            print(s1)
+            print(s2)
+            print(s3)
+            from megatron.core.transformer.transformer_block import arraypp
+            import numpy as np
+            if isinstance(arraypp, np.ndarray):
+                np.save("/tmp2/activaton.npy", arraypp)
             torch.cuda.cudart().cudaProfilerStop()
 
         if args.manual_gc:
@@ -1287,7 +1307,8 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             # ratio = swapper.get_in_gpu_weight_ratio()
             # print(f"Ratio: {ratio}")
             swapper.reset_tmp_list()
-    progress_bar.close()
+    if torch.distributed.get_rank() == 0:
+        progress_bar.close()
     track_e2e_metrics()
 
     # Flush TensorBoard and WandB writers.
@@ -1438,8 +1459,11 @@ def evaluate_and_print_results(prefix, forward_step_func,
     # Timelimit hit during evaluation
     if timelimit:
         return
+    loss = -1
+    ppl = -1
     string = ' validation loss at {} | '.format(prefix)
     for key in total_loss_dict:
+        loss = total_loss_dict[key].item()
         string += '{} value: {:.6E} | '.format(key, total_loss_dict[key].item())
         ppl = math.exp(min(20, total_loss_dict[key].item()))
         string += '{} PPL: {:.6E} | '.format(key, ppl)
@@ -1467,6 +1491,9 @@ def evaluate_and_print_results(prefix, forward_step_func,
     print_rank_last('-' * length)
     print_rank_last(string)
     print_rank_last('-' * length)
+    
+    with open("/tmp2/loss.csv", "a") as f:
+        f.write(f"{args.topk_k_rate if args.topk_k_rate else 1}, {iteration}, {loss}, {ppl}\n")
 
 
 def cyclic_iter(iter):

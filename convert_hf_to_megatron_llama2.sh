@@ -17,7 +17,7 @@ else
 fi
 TP=1
 PP=2
-VPP=8
+VPP=4
 
 LLAMA_META_FORMAT_DIR="/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-hf"
 #LLAMA_META_FORMAT_DIR="/tmp2/Llama-2-${MODEL_TYPE}-hf"

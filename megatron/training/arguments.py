@@ -608,6 +608,7 @@ def core_transformer_config_from_args(args, config_class=None):
     kw_args['profile'] = args.profile
     kw_args['swap_weight'] = args.swap_weight
     kw_args['llama_size'] = args.llama_size
+    kw_args['topk_k_rate'] = args.topk_k_rate
     if args.swiglu:
         kw_args['activation_func'] = F.silu
         kw_args['gated_linear_unit'] = True
@@ -1332,6 +1333,9 @@ def _add_checkpointing_args(parser):
                         help="Set model size")
     group.add_argument('--offload-activation', action='store_true',
                         help="If set, the activation will offload to cpu memory between forward and backward propagation.")
+    group.add_argument('--topk-k-rate', type=float, default=None,
+                        help="To compress the activation")
+    
     return parser
 
 

@@ -7,6 +7,7 @@ from typing import List, Tuple, Union
 
 import torch
 from torch import Tensor
+import torch.distributed
 
 from megatron.core import InferenceParams, parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
@@ -26,7 +27,8 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import BaseTransformerLayer, TransformerLayer
 from megatron.core.transformer.utils import sharded_state_dict_default
 from megatron.core.utils import make_sharded_tensor_for_checkpoint, make_viewless_tensor
-
+arraypp = None
+from megatron.training.global_vars import get_args
 
 def get_num_layers_to_build(config: TransformerConfig) -> int:
 
@@ -60,6 +62,34 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
         num_layers_to_build = num_layers_per_pipeline_rank
 
     return num_layers_to_build
+
+class TopKFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, k):
+        # 在第二个维度上拆分张量
+        tensors = torch.split(input, 1, dim=1)
+        results = []
+        for t in tensors:
+            t_tmp = t
+            t = t.contiguous().reshape(-1)
+            abs_dense_tensor = torch.abs(t)
+            values, indices = torch.topk(abs_dense_tensor, int(abs_dense_tensor.numel() * k))
+            tmp_indices = indices.to(torch.uint16)
+            values = t[indices]
+            compressed_dense_tensor = torch.zeros_like(t_tmp)
+            compressed_dense_tensor.reshape(-1)[indices] = t[indices]
+            results.append(compressed_dense_tensor)
+        # 在第二个维度上合并结果
+        result_tensor = torch.cat(results, dim=1)
+        # ctx.save_for_backward(input, indices)
+        return result_tensor
+    
+    @staticmethod
+    def backward(ctx, grad_output:torch.Tensor):
+        # input, indices = ctx.saved_tensors
+        # grad_input = torch.zeros_like(input)
+        # grad_input[indices] = grad_output
+        return grad_output, None  # 第二个 None 对应于 k，不需要梯度
 
 
 @dataclass
@@ -102,7 +132,7 @@ class TransformerBlock(MegatronModule):
         post_process: bool = True,
     ):
         super().__init__(config=config)
-
+        self.k = config.topk_k_rate
         self.submodules = _get_block_submodules(config, spec)
         self.post_layer_norm = post_layer_norm
         self.pre_process = pre_process
@@ -287,6 +317,12 @@ class TransformerBlock(MegatronModule):
                         rotary_pos_emb,
                         packed_seq_params,
                     )
+                    
+                
+                # if self.k != None and l in [7,15,23] and isinstance(hidden_states, torch.Tensor):
+                #     hidden_states = self.activation_compression(hidden_states)
+
+                
         else:
             raise ValueError("Invalid activation recompute method.")
 
@@ -408,7 +444,10 @@ class TransformerBlock(MegatronModule):
                             hidden_states = self.cuda_graphs[l_no][self.current_microbatch](
                                 hidden_states, is_first_microbatch=(self.current_microbatch == 0),
                             )
-
+                        from megatron.core.parallel_state import get_pipeline_model_parallel_rank
+                        real_l_no = get_pipeline_model_parallel_rank() * 8 + l_no
+                        if self.k != None and real_l_no == [7,15,23] and isinstance(hidden_states, torch.Tensor):
+                            hidden_states = self.activation_compression(hidden_states)
                     if (
                         torch.is_grad_enabled()
                         and self.config.cpu_offloading
@@ -463,3 +502,9 @@ class TransformerBlock(MegatronModule):
                 )
 
         return sharded_state_dict
+    
+    def activation_compression(self, activation: torch.Tensor) -> tuple[torch.Tensor,torch.Tensor]:
+        if self.k > 1:
+            raise "Error, compression rate must be smaller than 1"
+        else:
+            return TopKFunction.apply(activation, self.k/2)

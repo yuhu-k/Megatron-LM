@@ -301,6 +301,8 @@ class TransformerConfig(ModelParallelConfig):
     swap_weight: bool = False
     
     llama_size: str = None
+    
+    topk_k_rate: float = None
 
     def __post_init__(self):
         """ Python dataclass method that is used to modify attributes after initialization.

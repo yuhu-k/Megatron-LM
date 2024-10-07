@@ -526,7 +526,6 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
             q = query.permute(1, 2, 0, 3)
             k = key.permute(1, 2, 0, 3)
             v = value.permute(1, 2, 0, 3)
-            print(q.size(), k.size(), v.size(), query.size(), key.size(), value.size())
             
             output = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=False)
 

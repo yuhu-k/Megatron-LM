@@ -106,7 +106,8 @@ def _communicate_shapes(tensor_send_next, tensor_send_prev, recv_prev, recv_next
 
         # To protect against race condition when using batch_isend_irecv().
         # should take this out once the bug with batch_isend_irecv is resolved.
-        torch.cuda.synchronize()
+        if config.batch_p2p_comm:
+            torch.cuda.synchronize()
 
     recv_prev_shape = [0, 0, 0]
     if recv_prev_shape_tensor is not None:
@@ -374,7 +375,7 @@ def _communicate(
     return tensor_recv_prev, tensor_recv_next, reqs
 
 
-def recv_forward(tensor_shape: Shape, config: ModelParallelConfig) -> torch.Tensor:
+def recv_forward(tensor_shape: Shape, config: ModelParallelConfig, overlap_p2p_comm: bool = False) -> torch.Tensor:
     """ Receive tensor from previous rank in pipeline (forward receive).
 
     See _communicate for argument details.
@@ -382,46 +383,54 @@ def recv_forward(tensor_shape: Shape, config: ModelParallelConfig) -> torch.Tens
 
     if core.parallel_state.is_pipeline_first_stage():
         input_tensor = None
+        reqs = None
     else:
         if config.timers is not None:
             config.timers('forward-recv', log_level=2).start()
-        input_tensor, _, _ = _communicate(
+        input_tensor, _, reqs = _communicate(
             tensor_send_next=None,
             tensor_send_prev=None,
             recv_prev=True,
             recv_next=False,
             tensor_shape=tensor_shape,
             config=config,
+            wait_on_reqs=(not overlap_p2p_comm),
         )
         if config.timers is not None:
             config.timers('forward-recv').stop()
+    if overlap_p2p_comm:
+        return input_tensor, reqs
     return input_tensor
 
 
-def recv_backward(tensor_shape: Shape, config: ModelParallelConfig) -> torch.Tensor:
+def recv_backward(tensor_shape: Shape, config: ModelParallelConfig, overlap_p2p_comm: bool = False) -> torch.Tensor:
     """Receive tensor from next rank in pipeline (backward receive).
 
     See _communicate for argument details.
     """
     if core.parallel_state.is_pipeline_last_stage():
         output_tensor_grad = None
+        reqs = None
     else:
         if config.timers is not None:
             config.timers('backward-recv', log_level=2).start()
-        _, output_tensor_grad, _ = _communicate(
+        _, output_tensor_grad, reqs = _communicate(
             tensor_send_next=None,
             tensor_send_prev=None,
             recv_prev=False,
             recv_next=True,
             tensor_shape=tensor_shape,
             config=config,
+            wait_on_reqs=(not overlap_p2p_comm),
         )
         if config.timers is not None:
             config.timers('backward-recv').stop()
+    if overlap_p2p_comm:
+        return output_tensor_grad, reqs
     return output_tensor_grad
 
 
-def send_forward(output_tensor: torch.Tensor, config: ModelParallelConfig) -> None:
+def send_forward(output_tensor: torch.Tensor, config: ModelParallelConfig, overlap_p2p_comm: bool = False) -> None:
     """Send tensor to next rank in pipeline (forward send).
 
     See _communicate for argument details.
@@ -437,12 +446,13 @@ def send_forward(output_tensor: torch.Tensor, config: ModelParallelConfig) -> No
             recv_next=False,
             tensor_shape=None,
             config=config,
+            wait_on_reqs=(not overlap_p2p_comm),
         )
         if config.timers is not None:
             config.timers('forward-send').stop()
 
 
-def send_backward(input_tensor_grad: torch.Tensor, config: ModelParallelConfig) -> None:
+def send_backward(input_tensor_grad: torch.Tensor, config: ModelParallelConfig, overlap_p2p_comm: bool = False) -> None:
     """Send tensor to previous rank in pipeline (backward send).
 
     See _communicate for argument details.
@@ -457,6 +467,7 @@ def send_backward(input_tensor_grad: torch.Tensor, config: ModelParallelConfig) 
             recv_next=False,
             tensor_shape=None,
             config=config,
+            wait_on_reqs=(not overlap_p2p_comm),
         )
         if config.timers is not None:
             config.timers('backward-send').stop()

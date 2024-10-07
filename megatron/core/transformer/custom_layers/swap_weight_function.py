@@ -95,10 +95,11 @@ class _Linear(torch.autograd.Function):
             #     if store_weight:
             #         ctx.nf4_weight = weight
             # weight = weight.to(inp.dtype)
-            offload_weight = True
+            args = get_args()
+            offload_weight = (args.virtual_pipeline_model_parallel_size is None or args.virtual_pipeline_model_parallel_size == 1)
             weight_for_save = weight
             weight = weight.get_computable_form()
-            torch.cuda.synchronize()
+            torch.cuda.current_stream().synchronize()
 
         
         # Make sure input dimensions are compatible
@@ -277,8 +278,8 @@ class _Linear(torch.autograd.Function):
             ctx.ub_split_ag = ub_split_ag
             ctx.tp_size = tp_size
             ctx.requires_dgrad = inp.requires_grad
-        # if offload_weight:
-        #     weight_for_save.offload()
+        if offload_weight:
+            weight_for_save.offload()
         # Row Parallel Linear
         if ub_split_rs:
             out = rs_out
@@ -312,10 +313,11 @@ class _Linear(torch.autograd.Function):
                 weight = swapper.get_weight(ctx.w_id)
             if chk_tensor_registered(weight):
                 # weight = ctx.nf4_weight.to(grad_output.dtype)
+                args = get_args()
                 weight_tmp = weight
-                offload_weight = True
+                offload_weight = (args.virtual_pipeline_model_parallel_size is None or args.virtual_pipeline_model_parallel_size == 1)
                 weight = weight.get_computable_form()
-                torch.cuda.synchronize()
+                torch.cuda.current_stream().synchronize()
             
             # if args.lms:
             #     weight = weight.to(torch.cuda.current_device())
@@ -462,8 +464,8 @@ class _Linear(torch.autograd.Function):
 
             if not ctx.use_bias:
                 grad_bias = None
-        # if offload_weight:
-        #     weight_tmp.offload()
+        if offload_weight:
+            weight_tmp.offload()
 
         return (
             wgrad if require_grad else None,
