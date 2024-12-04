@@ -825,7 +825,7 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
             return r
         m = make_chpt(state_dict['language_model'],"")
         real_m = {}
-        lora="lora" in args.finetune_method
+        lora=args.finetune_method != None and "lora" in args.finetune_method
         for key in m:
             tmp = m[key]
             key:str = key.replace("encoder","decoder").replace("dense_h_to_4h","linear_fc1")\
@@ -836,6 +836,19 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
                                 .replace("final_norm","final_layernorm")
             
             key = key.replace("dense","linear_proj")
+            
+            # if "linear_qkv" in key and lora:
+            #     if tmp == None:
+            #         tensor1, tensor2, tensor3 = None, None, None
+            #     else:
+            #         tensor1, tensor2, tensor3 = torch.chunk(tmp, 3, dim=0)
+            #     key1 = key.replace("linear_qkv", "linear_q")
+            #     key2 = key.replace("linear_qkv", "linear_k")
+            #     key3 = key.replace("linear_qkv", "linear_v")
+            #     real_m[key1] = tensor1
+            #     real_m[key2] = tensor2
+            #     real_m[key3] = tensor3
+            #     continue
             
             if "fc1" in key and lora:
                 if tmp == None:

@@ -6,18 +6,20 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0,1
 
 
-GPUS_PER_NODE=1
+GPUS_PER_NODE=2
 MODEL_TYPE="7b" #"13b"
 # Change for multinode config
-MASTER_ADDR=eclab40902
+MASTER_ADDR=compute1 #eclab3080
 MASTER_PORT=6000
-NNODES=2 #1
+NNODES=1
 WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 HOSTNAME=$(hostname)
 TIME=$(date '+%Y-%m-%d_%H:%M')
 
 if [[ $HOSTNAME == *4090* ]]; then
-    export NCCL_DEBUG=INFO && export NCCL_SOCKET_IFNAME=enp5s0 && export GLOO_SOCKET_IFNAME=enp5s0
+    export NCCL_DEBUG=INFO && export NCCL_SOCKET_IFNAME=eno2 && export GLOO_SOCKET_IFNAME=eno2
+elif [[ $HOSTNAME == compute* ]]; then
+    export NCCL_DEBUG=INFO && export NCCL_SOCKET_IFNAME=eth0 && export GLOO_SOCKET_IFNAME=eth0 
 else
     export NCCL_DEBUG=INFO && export NCCL_SOCKET_IFNAME=enp181s0 && export GLOO_SOCKET_IFNAME=enp181s0
 fi
@@ -108,21 +110,25 @@ GPT_ARGS="
 	--position-embedding-type rope \
 	--no-masked-softmax-fusion \
 	--attention-softmax-in-fp32 \
-    --train-iters $(echo "scale=0; 50002 / $GLOBAL_BATCH_SIZE * 0.9 / 1" | bc) \
+    --train-iters  $(echo "scale=0; 50002 / $GLOBAL_BATCH_SIZE * 0.9 / 1" | bc)\
+    --recompute-num-layers $(($LAYER_NUM / $PPdegree / $VPPdegree)) \
+    --recompute-method block \
+    --recompute-granularity full \
 "
-    # --recompute-num-layers $(($LAYER_NUM / $PPdegree / $VPPdegree)) \
-    # --recompute-method block \
-    # --recompute-granularity full \
+
     # --num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree / $VPPdegree))
+
 
 
 
 LLAMA_ARGS="
     --llama-size ${MODEL_TYPE} \
     --swiglu \
-    --finetune-mlp \
-    --overlap-dequantize \
 "
+    # --overlap-dequantize
+    # --finetune-mlp \
+    # --swap-weight
+
 
 
 
@@ -141,8 +147,8 @@ NSYS_ARGS="
 PROF_ARGS="
     --profile \
     --profile-ranks 0 1 2 3 4 5 6 7\
-    --profile-step-start 1990 \
-    --profile-step-end 2000 \
+    --profile-step-start 15 \
+    --profile-step-end 20 \
     --profile-output /tmp2/yuhu/${HOSTNAME}_${MODEL_TYPE}_${TIME}.json
 "
 
@@ -166,18 +172,22 @@ LMS_ARGS="
     --lms-swap \
     --lms-swap-policy dynamic-early \
 "
-if [ -d $RESULTS_PATH ]; then
-    mkdir -p $RESULTS_PATH
-fi
+# if [ -d $RESULTS_PATH ]; then
+#     mkdir -p $RESULTS_PATH
+# fi
 
-if [ -e /tmp2/yuhu.txt ]; then
-    rm /tmp2/yuhu.txt
-fi
+# if [ -e /tmp2/yuhu.txt ]; then
+#     rm /tmp2/yuhu.txt
+# fi
 
-if [ -e /tmp2/loss.csv ]; then
-    rm /tmp2/loss.csv
-fi
-echo "k, iteration, loss, ppl" > /tmp2/loss.csv
+# if [ -e /tmp2/debug.txt ]; then
+#     rm /tmp2/debug.txt
+# fi
+
+# if [ -e /tmp2/loss.csv ]; then
+#     rm /tmp2/loss.csv
+# fi
+# echo "k, iteration, loss, ppl" > /tmp2/loss.csv
 
 # echo "nsys profile $NSYS_ARGS \
 #     torchrun $DISTRIBUTED_ARGS finetune_llama.py \
@@ -191,65 +201,64 @@ echo "k, iteration, loss, ppl" > /tmp2/loss.csv
 #     $PROF_ARGS \
 # "
 
-NUM=10
-for (( i=0; i<${NUM}; i++ )); do
-    # mbs=$((2 ** $i))
-    # echo $mbs
-    # echo "$mbs lora" >> /tmp2/yuhu.txt
-    rate=$(echo "0.05 * $i + 0.05"|bc)
-    echo $rate
+# NUM=3
+# for (( i=0; i<${NUM}; i++ )); do
+#     # mbs=$((2 ** $i))
+#     # echo $mbs
+#     # echo "$mbs lora" >> /tmp2/yuhu.txt
+#     rate=$(echo "0.05 * $i + 0.4"|bc)
+#     # echo $rated
 
-    # # nsys profile $NSYS_ARGS \
-    torchrun $DISTRIBUTED_ARGS finetune_llama.py \
-        --distributed-backend nccl \
-        $GPT_ARGS \
-        --micro-batch-size 2 \
-        $DATA_ARGS \
-        $OUTPUT_ARGS \
-        $LLAMA_ARGS \
-        --finetune-method lora \
-        --transformer-impl transformer_engine \
-        --save $RESULTS_PATH \
-        --load $CHECKPOINT_PATH \
-        $PROF_ARGS \
-        --topk-k-rate $rate \
-        # --skip-train
-        # --no-gradient-accumulation-fusion \
-        # --swap-weight
-        # --offload-activation
-
-    # echo "$mbs qlora" >> /tmp2/yuhu.txt
-
-
-#     nsys profile $NSYS_ARGS \
-#     torchrun $DISTRIBUTED_ARGS finetune_llama.py \
-#         --distributed-backend nccl \
-#         $GPT_ARGS \
-#         --micro-batch-size $mbs \
-#         $DATA_ARGS \
-#         $OUTPUT_ARGS \
-#         $LLAMA_ARGS \
-#         --finetune-method qlora \
-#         --transformer-impl transformer_engine \
-#         --save $RESULTS_PATH \
-#         --load $CHECKPOINT_PATH \
-#         $PROF_ARGS \
+#     # # nsys profile $NSYS_ARGS \
+#     # torchrun $DISTRIBUTED_ARGS finetune_llama.py \
+#     #     --distributed-backend nccl \
+#     #     $GPT_ARGS \
+#     #     --micro-batch-size 2 \
+#     #     $DATA_ARGS \
+#     #     $OUTPUT_ARGS \
+#     #     $LLAMA_ARGS \
+#     #     --finetune-method lora \
+#     #     --transformer-impl transformer_engine \
+#     #     --save $RESULTS_PATH \
+#     #     --load $CHECKPOINT_PATH \
+#     #     $PROF_ARGS \
+#     #     --topk-k-rate $rate \
 #         # --no-gradient-accumulation-fusion \
 #         # --swap-weight
 #         # --offload-activation
-done
+
+#     # echo "$mbs qlora" >> /tmp2/yuhu.txt
+
+
+# #     nsys profile $NSYS_ARGS \
+# #     torchrun $DISTRIBUTED_ARGS finetune_llama.py \
+# #         --distributed-backend nccl \
+# #         $GPT_ARGS \
+# #         --micro-batch-size $mbs \
+# #         $DATA_ARGS \
+# #         $OUTPUT_ARGS \
+# #         $LLAMA_ARGS \
+# #         --finetune-method qlora \
+# #         --transformer-impl transformer_engine \
+# #         --save $RESULTS_PATH \
+# #         --load $CHECKPOINT_PATH \
+# #         $PROF_ARGS \
+# #         # --no-gradient-accumulation-fusion \
+# #         # --swap-weight
+# #         # --offload-activation
+# done
 
 
 
-# nsys profile $NSYS_ARGS \
+nsys profile $NSYS_ARGS \
 torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     --distributed-backend nccl \
     $GPT_ARGS \
-    --micro-batch-size 2 \
+    --micro-batch-size 1 \
     $DATA_ARGS \
     $OUTPUT_ARGS \
     $LLAMA_ARGS \
-    --finetune-method lora \
+    --finetune-method qlora \
     --transformer-impl transformer_engine \
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \

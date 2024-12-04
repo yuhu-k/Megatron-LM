@@ -303,6 +303,8 @@ class TransformerConfig(ModelParallelConfig):
     llama_size: str = None
     
     topk_k_rate: float = None
+    
+    overlap_dequantize: bool = False
 
     def __post_init__(self):
         """ Python dataclass method that is used to modify attributes after initialization.

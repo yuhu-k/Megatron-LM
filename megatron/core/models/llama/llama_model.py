@@ -115,35 +115,35 @@ class LLaMAModel(LanguageModule):
                 self.embedding_activation_buffer = None
                 self.grad_output_buffer = None
 
-            if config.swap_weight:
-                from megatron.core.transformer.custom_layers.swap_weight_layer import SwapTPColumnParallelLinear
-                self.output_layer = SwapTPColumnParallelLinear(
-                    config.hidden_size,
-                    self.vocab_size,
-                    config=config,
-                    init_method=config.init_method,
-                    bias=False,
-                    skip_bias_add=False,
-                    gather_output=not self.parallel_output,
-                    skip_weight_param_allocation=self.pre_process
-                    and self.share_embeddings_and_output_weights,
-                    embedding_activation_buffer=self.embedding_activation_buffer,
-                    grad_output_buffer=self.grad_output_buffer,
-                )
-            else:
-                self.output_layer = tensor_parallel.ColumnParallelLinear(
-                    config.hidden_size,
-                    self.vocab_size,
-                    config=config,
-                    init_method=config.init_method,
-                    bias=False,
-                    skip_bias_add=False,
-                    gather_output=not self.parallel_output,
-                    skip_weight_param_allocation=self.pre_process
-                    and self.share_embeddings_and_output_weights,
-                    embedding_activation_buffer=self.embedding_activation_buffer,
-                    grad_output_buffer=self.grad_output_buffer,
-                )
+            # if config.swap_weight:
+            #     from megatron.core.transformer.custom_layers.swap_weight_layer import SwapTPColumnParallelLinear
+            #     self.output_layer = SwapTPColumnParallelLinear(
+            #         config.hidden_size,
+            #         self.vocab_size,
+            #         config=config,
+            #         init_method=config.init_method,
+            #         bias=False,
+            #         skip_bias_add=False,
+            #         gather_output=not self.parallel_output,
+            #         skip_weight_param_allocation=self.pre_process
+            #         and self.share_embeddings_and_output_weights,
+            #         embedding_activation_buffer=self.embedding_activation_buffer,
+            #         grad_output_buffer=self.grad_output_buffer,
+            #     )
+            # else:
+            self.output_layer = tensor_parallel.ColumnParallelLinear(
+                config.hidden_size,
+                self.vocab_size,
+                config=config,
+                init_method=config.init_method,
+                bias=False,
+                skip_bias_add=False,
+                gather_output=not self.parallel_output,
+                skip_weight_param_allocation=self.pre_process
+                and self.share_embeddings_and_output_weights,
+                embedding_activation_buffer=self.embedding_activation_buffer,
+                grad_output_buffer=self.grad_output_buffer,
+            )
 
         else:
             self.test_layer = None

@@ -61,7 +61,7 @@ class LoRALinear(SwapWeightLinear):
             skip_bias_add=skip_bias_add,
             skip_weight_param_allocation=skip_weight_param_allocation,
             tp_comm_buffer_name=tp_comm_buffer_name,
-            quantize=finetune_weight and config.finetune_method == "qlora",
+            quantize=config.finetune_method == "qlora",
         )
         self.requires_grad_(False)
         self.rank = config.finetune_lora_rank
@@ -313,4 +313,5 @@ class LoRARowParallelLinear(LoRALinear):
         return make_sharded_tensors_for_checkpoint(
             state_dict, prefix, {'weight': 1}, sharded_offsets
         )
+
 

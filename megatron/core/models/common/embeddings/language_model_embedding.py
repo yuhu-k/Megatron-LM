@@ -45,22 +45,22 @@ class LanguageModelEmbedding(MegatronModule):
         )
 
         # Word embeddings (parallel).
-        if config.swap_weight:
-            self.word_embeddings = SwapWeightVocabParallelEmbedding(
-                num_embeddings=self.vocab_size,
-                embedding_dim=self.config.hidden_size,
-                init_method=self.config.init_method,
-                reduce_scatter_embeddings=self.reduce_scatter_embeddings,
-                config=self.config,
-            )
-        else:
-            self.word_embeddings = tensor_parallel.VocabParallelEmbedding(
-                num_embeddings=self.vocab_size,
-                embedding_dim=self.config.hidden_size,
-                init_method=self.config.init_method,
-                reduce_scatter_embeddings=self.reduce_scatter_embeddings,
-                config=self.config,
-            )
+        # if config.swap_weight:
+        #     self.word_embeddings = SwapWeightVocabParallelEmbedding(
+        #         num_embeddings=self.vocab_size,
+        #         embedding_dim=self.config.hidden_size,
+        #         init_method=self.config.init_method,
+        #         reduce_scatter_embeddings=self.reduce_scatter_embeddings,
+        #         config=self.config,
+        #     )
+        # else:
+        self.word_embeddings = tensor_parallel.VocabParallelEmbedding(
+            num_embeddings=self.vocab_size,
+            embedding_dim=self.config.hidden_size,
+            init_method=self.config.init_method,
+            reduce_scatter_embeddings=self.reduce_scatter_embeddings,
+            config=self.config,
+        )
 
         # Position embedding (serial).
         if self.add_position_embedding:

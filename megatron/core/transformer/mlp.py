@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from megatron.core import parallel_state
+from megatron.core import parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing import ShardedTensor
 from megatron.core.dist_checkpointing.mapping import (
     ReplicaId,
@@ -73,7 +73,7 @@ class MLP(MegatronModule):
             )
         else:
             self.pre_norm = None
-        if "lora" in config.finetune_method:
+        if config.finetune_method != None and "lora" in config.finetune_method:
 
             if config.gated_linear_unit:
                 self.linear_fc1_1 = build_module(
@@ -156,8 +156,30 @@ class MLP(MegatronModule):
             )
 
         self.activation_func = self.config.activation_func
+        
+        if "lora" in config.finetune_method and config.recompute_method == "block" and False:
+            self.forward = self._checkpointed_forward
+        else:
+            self.forward = self.real_forward
+    
+    def _checkpointed_forward(self, hidden_states):
+        def custom_forward(*inputs):
+            h = inputs[0]
+            output_ = self.real_forward(
+                h,
+            )
+            return output_
 
-    def forward(self, hidden_states):
+
+        hidden_states = tensor_parallel.checkpoint(
+            custom_forward,
+            False,
+            hidden_states,
+        )
+
+        return hidden_states
+
+    def real_forward(self, hidden_states):
         
         if self.config.profile:
             torch.cuda.nvtx.range_push("mlp")
@@ -167,16 +189,24 @@ class MLP(MegatronModule):
         
         # [s, b, 4 * h/p]
         if self.pre_norm is not None:
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_push("pre_norm")
             hidden_states = self.pre_norm(hidden_states)
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_pop()
 
-        if "lora" in self.config.finetune_method and self.config.gated_linear_unit:
+        torch.cuda.nvtx.range_push("linear_fc1")
+        if self.config.finetune_method != None and "lora" in self.config.finetune_method and self.config.gated_linear_unit:
             gate, gate_bias = self.linear_fc1_1(hidden_states)
             up, up_bias = self.linear_fc1_2(hidden_states)
             intermediate_parallel = torch.cat([gate,up], dim=-1)
             bias_parallel = gate_bias + up_bias if gate_bias != None and up_bias != None else None
         else:
             intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
+        torch.cuda.nvtx.range_push("activation")
         if self.config.bias_activation_fusion:
             if self.activation_func == F.gelu:
                 if self.config.gated_linear_unit:
@@ -204,9 +234,14 @@ class MLP(MegatronModule):
                 intermediate_parallel = glu(intermediate_parallel)
             else:
                 intermediate_parallel = self.activation_func(intermediate_parallel)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
         # [s, b, h]
+        torch.cuda.nvtx.range_push("linear_fc2")
         output, output_bias = self.linear_fc2(intermediate_parallel)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
         if self.config.profile:
             torch.cuda.nvtx.range_pop()

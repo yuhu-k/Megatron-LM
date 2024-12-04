@@ -11,7 +11,8 @@ from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
 from megatron.core.transformer.custom_layers.swap_weight_function import SwapTELinear
 from megatron.core.transformer.custom_layers.transformer_engine import _get_extra_te_kwargs
 from megatron.core.transformer.transformer_config import TransformerConfig
-from torchao.dtypes.nf4tensor import to_nf4
+# from torchao.dtypes.nf4tensor import to_nf4
+from tensor_manager.nf4tensor import to_nf4
 from tensor_manager import register_tensor
 
 
@@ -138,8 +139,6 @@ class SwapWeightLinear(SwapTELinear):
             self.__delete_all_weight()
             params_dtype = self.params_dtype
             if self.swap_weight:
-                weight_swapper = get_weight_swapper()
-                self.swap_weight_id = weight_swapper.register(device=torch.cuda.current_device())
                 device = "cpu"
             else:
                 device = torch.cuda.current_device()
@@ -153,8 +152,14 @@ class SwapWeightLinear(SwapTELinear):
         Creates a linear weight and bias tensor, using NF4 dtype if we're quantizing
         (indicated via quantize_base=True).
         """
-        tmp = torch.empty(weight_size, device=device, requires_grad=require_grad, dtype=params_dtype)
+        tmp = torch.empty(weight_size, device=device if not self.quantize else torch.cuda.current_device(), requires_grad=require_grad, dtype=params_dtype)
         weight = tmp if not self.quantize else to_nf4(tmp)
+        if self.quantize and self.swap_weight:
+            weight.quantized_data = weight.quantized_data.cpu()
+            weight.quantized_scalers = weight.quantized_scalers.cpu()
+            weight.quantization_factor = weight.quantization_factor.cpu()
+            weight.nf4 = weight.nf4.cpu()
+            weight = weight.cpu()
         self.register_parameter("weight", torch.nn.Parameter(weight))
 
     def __delete_all_weight(self):
@@ -164,20 +169,15 @@ class SwapWeightLinear(SwapTELinear):
         self.weight_tensor = None
         
     def forward(self, inp: torch.Tensor):
-        if self.swap_weight:
-            return super().forward(inp, weight_id=self.swap_weight_id)
-        else:
-            return super().forward(inp)
+        return super().forward(inp)
     
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs):
         result = super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs)
-        if self.swap_weight:
-            weight_swapper = get_weight_swapper()
-            weight_swapper.update_weight(self.weight, self.swap_weight_id)
-            self.weight.requires_grad = False
+
         if self.quantize or self.swap_weight:
+            self.weight.requires_grad = False
             register_tensor(self.weight)
         return result
 

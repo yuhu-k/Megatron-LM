@@ -62,7 +62,7 @@ from .global_vars import (
 
 # 0513 integrate lms to megatron lm
 import large_model_gpu as lms
-from swap_manager import init_weight_swapper, get_weight_swapper
+# from swap_manager import init_weight_swapper, get_weight_swapper
 import time
 from training_speed_recorder import get_recorder, init_recorder
 from tensor_manager import init_tensor_manager, finish_warmup
@@ -211,9 +211,6 @@ def pretrain(train_valid_test_dataset_provider,
     init_tensor_manager()
     if torch.distributed.get_rank() == 0:
         init_recorder()
-        
-    if args.swap_weight:
-        init_weight_swapper()
     
     if args.log_progress:
         append_to_progress_log("Starting job")
@@ -289,6 +286,12 @@ def pretrain(train_valid_test_dataset_provider,
             print_rank_0("retro cyclic train iters : %d" % args.train_iters)
 
         iteration = 0
+        # if args.do_valid:
+        #     prefix = f'iteration {iteration} on validation set'
+        #     evaluate_and_print_results(prefix, forward_step_func,
+        #                             valid_data_iterator, model,
+        #                             iteration, process_non_loss_data_func, config,
+        #                             verbose=True, write_to_tensorboard=not args.skip_train)
         if args.do_train and args.train_iters > 0:
             if args.offload_activation:
                 def pack_hook(x:torch.Tensor):
@@ -1301,12 +1304,6 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         if args.finetune_method == "qlora":
             finish_warmup()
         
-        if args.swap_weight:
-            swapper = get_weight_swapper()
-            swapper.finish_warmup()
-            # ratio = swapper.get_in_gpu_weight_ratio()
-            # print(f"Ratio: {ratio}")
-            swapper.reset_tmp_list()
     if torch.distributed.get_rank() == 0:
         progress_bar.close()
     track_e2e_metrics()

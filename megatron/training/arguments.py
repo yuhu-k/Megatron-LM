@@ -609,6 +609,7 @@ def core_transformer_config_from_args(args, config_class=None):
     kw_args['swap_weight'] = args.swap_weight
     kw_args['llama_size'] = args.llama_size
     kw_args['topk_k_rate'] = args.topk_k_rate
+    kw_args['overlap_dequantize'] = args.overlap_dequantize
     if args.swiglu:
         kw_args['activation_func'] = F.silu
         kw_args['gated_linear_unit'] = True

@@ -76,30 +76,15 @@ class _Linear(torch.autograd.Function):
         is_grad_enabled: bool,
         ub_split_rs: bool,
         ub_split_ag: bool,
-        weight_id: int = None,
     ) -> torch.Tensor:
-        offload_weight = False
-        if ctx is not None:
-            ctx.store_weight = True
-            ctx.nf4tensor = False
-            store_weight = True
-        if weight == None:
-            swapper = get_weight_swapper()
-            weight = swapper.get_weight(weight_id)
-            if ctx is not None:
-                ctx.store_weight = False
-                store_weight = False
         if chk_tensor_registered(weight):
-            # if ctx is not None:
-            #     ctx.nf4tensor = True
-            #     if store_weight:
-            #         ctx.nf4_weight = weight
-            # weight = weight.to(inp.dtype)
-            args = get_args()
-            offload_weight = (args.virtual_pipeline_model_parallel_size is None or args.virtual_pipeline_model_parallel_size == 1)
             weight_for_save = weight
             weight = weight.get_computable_form()
             torch.cuda.current_stream().synchronize()
+            freeze_weight = True
+        else:
+            freeze_weight = False
+
 
         
         # Make sure input dimensions are compatible
@@ -252,15 +237,13 @@ class _Linear(torch.autograd.Function):
         #     weight = weight.cpu()
             
         if is_grad_enabled:
-            if ctx is not None and not ctx.store_weight:
-                ctx.w_id = weight_id
             fp8_wgrad = fp8 and not fp8_meta["recipe"].override_linear_precision.wgrad
             hook = get_pack_hook()
             ctx.save_for_backward(
                 *hook.my_pack_hook(
                 inputmat_no_fp8 if weight.requires_grad and not fp8_wgrad else None,
                 inputmat_t if weight.requires_grad and fp8_wgrad else None,
-                weight_for_save if offload_weight else weight,
+                weight_for_save if freeze_weight else weight,
                 weight_t_fp8 if fp8 else None,
                 fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,)
             )
@@ -278,8 +261,7 @@ class _Linear(torch.autograd.Function):
             ctx.ub_split_ag = ub_split_ag
             ctx.tp_size = tp_size
             ctx.requires_dgrad = inp.requires_grad
-        if offload_weight:
-            weight_for_save.offload()
+
         # Row Parallel Linear
         if ub_split_rs:
             out = rs_out
@@ -306,18 +288,11 @@ class _Linear(torch.autograd.Function):
                 weight_t_fp8,
                 fwd_scale_inverses,
             ) = hook.my_unpack_hook(*ctx.saved_tensors)
-            #args = get_args()
-            offload_weight = False
-            if ctx is not None and ctx.store_weight == False:
-                swapper = get_weight_swapper()
-                weight = swapper.get_weight(ctx.w_id)
+
             if chk_tensor_registered(weight):
-                # weight = ctx.nf4_weight.to(grad_output.dtype)
-                args = get_args()
-                weight_tmp = weight
-                offload_weight = (args.virtual_pipeline_model_parallel_size is None or args.virtual_pipeline_model_parallel_size == 1)
                 weight = weight.get_computable_form()
                 torch.cuda.current_stream().synchronize()
+
             
             # if args.lms:
             #     weight = weight.to(torch.cuda.current_device())
@@ -454,9 +429,7 @@ class _Linear(torch.autograd.Function):
                     )
 
             require_grad = weight.requires_grad
-            if ctx is not None and ctx.store_weight == False:
-                swapper.offload_weight(ctx.w_id)
-                torch.cuda.empty_cache()
+
             
             # Column Parallel Linear
             if ctx.parallel_mode == "column" and ctx.tensor_parallel and handle is not None:
@@ -464,8 +437,8 @@ class _Linear(torch.autograd.Function):
 
             if not ctx.use_bias:
                 grad_bias = None
-        if offload_weight:
-            weight_tmp.offload()
+        # if ctx.offload_weight:
+        #     weight_tmp.offload()
 
         return (
             wgrad if require_grad else None,
@@ -473,7 +446,6 @@ class _Linear(torch.autograd.Function):
             None,
             dgrad.view(ctx.inp_shape) if ctx.requires_dgrad else None,
             grad_bias,
-            None,
             None,
             None,
             None,
@@ -551,7 +523,6 @@ class SwapLinear(Linear):
                 torch.is_grad_enabled(),
                 self.ub_split_rs,
                 self.ub_split_ag,
-                weight_id,
             )
             out = linear_fn(*args)
         

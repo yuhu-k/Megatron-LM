@@ -64,6 +64,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         submodules: TransformerLayerSubmodules,
         layer_number: int = 1,
         hidden_dropout: float = None,
+        streams:torch.cuda.Stream = None,
     ):
         super().__init__(config=config)
         self.submodules_config = submodules
@@ -82,7 +83,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
 
         ## [Module 2: SelfAttention]
         self.self_attention = build_module(
-            submodules.self_attention, config=self.config, layer_number=layer_number,
+            submodules.self_attention, config=self.config, layer_number=layer_number, streams=streams,
         )
 
         ## [Module 3: BiasDropoutFusion]

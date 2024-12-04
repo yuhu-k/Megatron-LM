@@ -181,7 +181,8 @@ class TransformerBlock(MegatronModule):
         #     coeff = self.layer_number
         #     self.norm_factor *= coeff
         def build_layer(layer_spec, layer_number):
-            return build_module(layer_spec, config=self.config, layer_number=layer_number,)
+            streams = [torch.cuda.Stream(device=torch.cuda.current_device()) for _ in range(3)]
+            return build_module(layer_spec, config=self.config, layer_number=layer_number, streams=streams)
 
         # offset is implicit in TransformerLayer
         self.layers = torch.nn.ModuleList(
@@ -446,8 +447,10 @@ class TransformerBlock(MegatronModule):
                             )
                         from megatron.core.parallel_state import get_pipeline_model_parallel_rank
                         real_l_no = get_pipeline_model_parallel_rank() * 8 + l_no
-                        if self.k != None and real_l_no == [7,15,23] and isinstance(hidden_states, torch.Tensor):
-                            hidden_states = self.activation_compression(hidden_states)
+                        # with open("/tmp2/index.txt", "a") as f:
+                        #     f.write(f"{real_l_no}")
+                        # if self.k != None and real_l_no in [3,7,11,15,19,23,27] and isinstance(hidden_states, torch.Tensor):
+                        #     hidden_states = self.activation_compression(hidden_states)
                     if (
                         torch.is_grad_enabled()
                         and self.config.cpu_offloading

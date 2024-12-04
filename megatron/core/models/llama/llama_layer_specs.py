@@ -38,7 +38,7 @@ def get_llama_layer_with_transformer_engine_spec(
                 module=SelfAttention,
                 params={"attn_mask_type": AttnMaskType.causal},
                 submodules=SelfAttentionSubmodules(
-                    qkv_layernorm=SwapWeightNorm,
+                    qkv_layernorm=TENorm,
                     linear_qkv=LoRAColumnParallelLinear,
                     core_attention=TEDotProductAttention,
                     linear_proj=LoRARowParallelLinear,
@@ -68,7 +68,7 @@ def _get_mlp_module_spec(
             submodules=MLPSubmodules(
                 linear_fc1=LoRAColumnParallelLinear if finetune else TEColumnParallelLinear if use_te else ColumnParallelLinear,
                 linear_fc2=LoRARowParallelLinear if finetune else TERowParallelLinear if use_te else RowParallelLinear,
-                pre_norm=SwapWeightNorm if finetune else TENorm if use_te else IdentityOp,
+                pre_norm=TENorm if use_te else IdentityOp,
             ),
         )
     else:

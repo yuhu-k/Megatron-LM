@@ -27,6 +27,7 @@ from megatron.core.utils import divide
 
 from .enums import AttnMaskType
 from .transformer_config import TransformerConfig
+import copy
 
 
 @dataclass
@@ -105,6 +106,11 @@ class Attention(MegatronModule, ABC):
             is_expert=False,
             tp_comm_buffer_name='proj',
         )
+        
+        if "lora" in config.finetune_method and config.recompute_method == "block" and False:
+            self.forward = self._checkpointed_forward
+        else:
+            self.forward = self.real_forward
 
     def _checkpointed_attention_forward(
         self,
@@ -242,8 +248,46 @@ class Attention(MegatronModule, ABC):
         This method needs to be implemented based on whether the derived class
         is "self-attn" or "cross-attn".
         """
+        
+    def _checkpointed_forward(
+        self,
+        hidden_states,
+        attention_mask,
+        key_value_states=None,
+        inference_params=None,
+        rotary_pos_emb=None,
+        packed_seq_params=None,
+    ):
+        def custom_forward(*inputs):
+            h = inputs[0]
+            a = inputs[1]
+            k = inputs[2]
+            i = inputs[3]
+            r = inputs[4]
+            output_ = self.real_forward(
+                h,
+                a,
+                k,
+                i,
+                r,
+            )
+            return output_
 
-    def forward(
+
+        hidden_states = tensor_parallel.checkpoint(
+            custom_forward,
+            False,
+            hidden_states,
+            attention_mask,
+            key_value_states,
+            inference_params,
+            rotary_pos_emb,
+            packed_seq_params,
+        )
+
+        return hidden_states
+
+    def real_forward(
         self,
         hidden_states,
         attention_mask,
@@ -308,7 +352,8 @@ class Attention(MegatronModule, ABC):
         # ==================================
         # core attention computation
         # ==================================
-
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push("core_attention")
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 query,
@@ -331,6 +376,8 @@ class Attention(MegatronModule, ABC):
         core_attn_out = core_attn_out.transpose(1, 2).contiguous()
         core_attn_out = core_attn_out.view(b, sq, -1)
         core_attn_out = core_attn_out.permute(1,0,2)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
         if packed_seq_params is not None:
             # reshape to same output shape as unpacked case
@@ -342,8 +389,11 @@ class Attention(MegatronModule, ABC):
         # =================
         # Output. [sq, b, h]
         # =================
-
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push("linear_proj")
         output, bias = self.linear_proj(core_attn_out)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
         if self.config.profile:
             torch.cuda.nvtx.range_pop()
             timer.pop()
@@ -365,6 +415,7 @@ class SelfAttention(Attention):
         submodules: SelfAttentionSubmodules,
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
+        streams:torch.cuda.Stream=None,
     ):
         super().__init__(
             config=config,
@@ -382,12 +433,52 @@ class SelfAttention(Attention):
             )
         else:
             self.qkv_layernorm = None
-
+        # if config.finetune_method == "lora":
+        #         self.linear_q = build_module(
+        #             submodules.linear_qkv,
+        #             self.config.hidden_size,
+        #             self.query_projection_size,
+        #             config=self.config,
+        #             init_method=self.config.init_method,
+        #             gather_output=False,
+        #             bias=self.config.add_bias_linear or self.config.add_qkv_bias,
+        #             skip_bias_add=False,
+        #             is_expert=False,
+        #             tp_comm_buffer_name='q',
+        #         )
+        #         self.linear_k = build_module(
+        #             submodules.linear_qkv,
+        #             self.config.hidden_size,
+        #             self.kv_projection_size,
+        #             config=self.config,
+        #             init_method=self.config.init_method,
+        #             gather_output=False,
+        #             bias=self.config.add_bias_linear or self.config.add_qkv_bias,
+        #             skip_bias_add=False,
+        #             is_expert=False,
+        #             tp_comm_buffer_name='q',
+        #         )
+        #         self.linear_v = build_module(
+        #             submodules.linear_qkv,
+        #             self.config.hidden_size,
+        #             self.kv_projection_size,
+        #             config=self.config,
+        #             init_method=self.config.init_method,
+        #             gather_output=False,
+        #             bias=self.config.add_bias_linear or self.config.add_qkv_bias,
+        #             skip_bias_add=False,
+        #             is_expert=False,
+        #             tp_comm_buffer_name='q',
+        #         )
+        # else:
+        qkv_config = copy.deepcopy(self.config)
+        qkv_config.finetune_lora_rank *= 3
+        qkv_config.finetune_lora_alpha *= 3
         self.linear_qkv = build_module(
             submodules.linear_qkv,
             self.config.hidden_size,
             self.query_projection_size + 2 * self.kv_projection_size,
-            config=self.config,
+            config=qkv_config,
             init_method=self.config.init_method,
             gather_output=False,
             bias=self.config.add_bias_linear or self.config.add_qkv_bias,
@@ -415,6 +506,7 @@ class SelfAttention(Attention):
             )
         else:
             self.k_layernorm = None
+        self.streams = streams
 
     def run_realtime_tests(self):
         """Performs a consistency check.
@@ -490,13 +582,24 @@ class SelfAttention(Attention):
         Derives `query`, `key` and `value` tensors from `hidden_states`.
         """
         # Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)]
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push(f"Layer {self.layer_number} get_query_key_value_tensors")
         if self.qkv_layernorm is not None:
+            torch.cuda.nvtx.range_push(f"Layer {self.layer_number} qkv_layernorm")
             norm_hidden_states = self.qkv_layernorm(hidden_states)
-            mixed_qkv, _ = self.linear_qkv(norm_hidden_states)
-        else:
-            mixed_qkv, _ = self.linear_qkv(hidden_states)
+            # with torch.cuda.stream(self.streams[0]):
+            #     if hasattr(self.linear_qkv.weight, "quantized_data"):
+            #         first_elements = (self.linear_qkv.weight.quantized_data >> 4).to(torch.long)
+            #         # second_elements = (self.quantized_data & 0b1111).to(torch.long)
+            # torch.cuda.synchronize()
+            torch.cuda.nvtx.range_pop()
+        torch.cuda.nvtx.range_push(f"Layer {self.layer_number} linear_qkv")
+        mixed_qkv, _ = self.linear_qkv(norm_hidden_states)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
         # [sq, b, hp] --> [sq, b, ng, (np/ng + 2) * hn]
+        torch.cuda.nvtx.range_push(f"Layer {self.layer_number} reshape")
         new_tensor_shape = mixed_qkv.size()[:-1] + (
             self.num_query_groups_per_partition,
             (
@@ -505,7 +608,10 @@ class SelfAttention(Attention):
             ),
         )
         mixed_qkv = mixed_qkv.view(*new_tensor_shape)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
+        torch.cuda.nvtx.range_push(f"Layer {self.layer_number} split")
         split_arg_list = [
             (
                 self.num_attention_heads_per_partition
@@ -524,6 +630,8 @@ class SelfAttention(Attention):
 
             # [sq, b, ng, (np/ng + 2) * hn] --> [sq, b, ng, np/ng * hn], [sq, b, ng, hn], [sq, b, ng, hn]
             (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3,)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
         # [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
@@ -536,6 +644,8 @@ class SelfAttention(Attention):
 
         if self.config.test_mode:
             self.run_realtime_tests()
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
         return query, key, value
 

@@ -49,18 +49,18 @@ class LLaMADataset(GPTDataset):
         index_split: Split,
         config: GPTDatasetConfig,
     ) -> None:
-        # super().__init__(
-        #     indexed_dataset, dataset_path, indexed_indices, num_samples, index_split, config
-        # )
-        self.config = config
-        # self.length = len(self.dataset)
-        # self.__build_shuffle_indices()
-        tokenizer = Llama2Tokenizer("/tmp2/Megatron-LM/tokenizer.model")
-        self.dataset = alpaca_cleaned_dataset(
-            tokenizer=tokenizer,
-            max_seq_len=config.sequence_length
+        super().__init__(
+            indexed_dataset, dataset_path, indexed_indices, num_samples, index_split, config
         )
-        self.iter = iter(self.dataset)
+        self.config = config
+        self.length = len(self.dataset)
+        self.__build_shuffle_indices()
+        # tokenizer = Llama2Tokenizer("/tmp2/Megatron-LM/tokenizer.model")
+        # self.dataset = alpaca_cleaned_dataset(
+        #     tokenizer=tokenizer,
+        #     max_seq_len=config.sequence_length
+        # )
+        # self.iter = iter(self.dataset)
         
     def __len__(self):
         return len(self.dataset)
@@ -86,35 +86,8 @@ class LLaMADataset(GPTDataset):
             tokens = batch["tokens"]
             labels = batch["labels"]
 
-        # text = torch.from_numpy(text).long()
-        # if self.config.add_extra_token_to_sequence:
-        #     tokens = text[:-1].contiguous()
-        #     labels = text[1:].contiguous()
-        # else:
-        #     tokens = text
-        #     labels = torch.roll(text, shifts=-1, dims=0)
-        #     labels[-1] = self._pad_token_id
         tokens = torch.as_tensor(tokens, dtype=torch.int64)
         labels = torch.as_tensor(labels, dtype=torch.int64)
-        # attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
-        #         tokens,
-        #         self.config.tokenizer.eod,
-        #         self.config.reset_position_ids,
-        #         self.config.reset_attention_mask,
-        #         self.config.eod_mask_loss,
-        #         self.config.create_attention_mask,
-        #     )
-
-        # # For padded sequences, mask the loss
-        # loss_mask[labels == self._pad_token_id] = 0.0
-
-        # # For padded sequences, ensure the embedding layer can map the token ID
-        # tokens[tokens == self._pad_token_id] = 0
-        # labels[labels == self._pad_token_id] = 0
-
-        # Batch padding sequence so we mask the loss
-        # if idx is None:
-        #     loss_mask = torch.zeros_like(loss_mask)
 
         if self.config.create_attention_mask:
             return {
