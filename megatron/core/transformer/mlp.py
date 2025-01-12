@@ -157,10 +157,10 @@ class MLP(MegatronModule):
 
         self.activation_func = self.config.activation_func
         
-        if "lora" in config.finetune_method and config.recompute_method == "block" and False:
-            self.forward = self._checkpointed_forward
-        else:
-            self.forward = self.real_forward
+        # if "lora" in config.finetune_method and config.recompute_method == "block" and False:
+        #     self.forward = self._checkpointed_forward
+        # else:
+        self.forward = self.real_forward
     
     def _checkpointed_forward(self, hidden_states):
         def custom_forward(*inputs):
@@ -182,17 +182,19 @@ class MLP(MegatronModule):
     def real_forward(self, hidden_states):
         
         if self.config.profile:
+            # main_stream = torch.cuda.current_stream()
+            # main_stream.synchronize()
             torch.cuda.nvtx.range_push("mlp")
             from megatron.training.global_vars import get_self_define_timer
             timer = get_self_define_timer()
             timer.push("mlp")
-        
+        # main_stream = torch.cuda.current_stream()
         # [s, b, 4 * h/p]
         if self.pre_norm is not None:
-            torch.cuda.synchronize()
+            # main_stream.synchronize()
             torch.cuda.nvtx.range_push("pre_norm")
             hidden_states = self.pre_norm(hidden_states)
-            torch.cuda.synchronize()
+            # main_stream.synchronize()
             torch.cuda.nvtx.range_pop()
 
         torch.cuda.nvtx.range_push("linear_fc1")
@@ -203,7 +205,7 @@ class MLP(MegatronModule):
             bias_parallel = gate_bias + up_bias if gate_bias != None and up_bias != None else None
         else:
             intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
         torch.cuda.nvtx.range_push("activation")
@@ -234,16 +236,17 @@ class MLP(MegatronModule):
                 intermediate_parallel = glu(intermediate_parallel)
             else:
                 intermediate_parallel = self.activation_func(intermediate_parallel)
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
         # [s, b, h]
         torch.cuda.nvtx.range_push("linear_fc2")
         output, output_bias = self.linear_fc2(intermediate_parallel)
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
         if self.config.profile:
+            # main_stream.synchronize()
             torch.cuda.nvtx.range_pop()
             timer.pop()
         return output, output_bias

@@ -297,6 +297,8 @@ class TransformerConfig(ModelParallelConfig):
     finetune_mlp: bool = False
     
     profile: bool = False
+
+    use_pytorch_profiler: bool = False
     
     swap_weight: bool = False
     
@@ -305,6 +307,10 @@ class TransformerConfig(ModelParallelConfig):
     topk_k_rate: float = None
     
     overlap_dequantize: bool = False
+
+    mobius: bool = False
+
+    within_stage: bool = False
 
     def __post_init__(self):
         """ Python dataclass method that is used to modify attributes after initialization.

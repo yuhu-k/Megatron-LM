@@ -10,7 +10,7 @@ from megatron.core.parallel_state import get_tensor_model_parallel_group
 
 from megatron.core.tensor_parallel import get_cuda_rng_tracker
 
-
+import transformer_engine
 import transformer_engine_extensions as tex
 
 from transformer_engine.pytorch.module.base import (
@@ -46,6 +46,7 @@ from transformer_engine.pytorch.module.linear import Linear
 from swap_manager import get_weight_swapper
 from large_model_gpu import get_pack_hook
 from tensor_manager import chk_tensor_registered
+from tensor_manager import register_activation
 
 
 class _Linear(torch.autograd.Function):
@@ -80,7 +81,7 @@ class _Linear(torch.autograd.Function):
         if chk_tensor_registered(weight):
             weight_for_save = weight
             weight = weight.get_computable_form()
-            torch.cuda.current_stream().synchronize()
+            # torch.cuda.current_stream().synchronize()
             freeze_weight = True
         else:
             freeze_weight = False
@@ -238,14 +239,27 @@ class _Linear(torch.autograd.Function):
             
         if is_grad_enabled:
             fp8_wgrad = fp8 and not fp8_meta["recipe"].override_linear_precision.wgrad
-            hook = get_pack_hook()
+            # hook = get_pack_hook()
+            # ctx.activations = register_activation(inputmat_no_fp8 if weight.requires_grad and not fp8_wgrad else None,
+            #     inputmat_t if weight.requires_grad and fp8_wgrad else None,
+            #     weight_for_save if freeze_weight else weight,
+            #     weight_t_fp8 if fp8 else None,
+            #     fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None)
+            # ctx.save_for_backward(
+            #     *hook.my_pack_hook(
+            #     inputmat_no_fp8 if weight.requires_grad and not fp8_wgrad else None,
+            #     inputmat_t if weight.requires_grad and fp8_wgrad else None,
+            #     weight_for_save if freeze_weight else weight,
+            #     weight_t_fp8 if fp8 else None,
+            #     fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,)
+            # )
             ctx.save_for_backward(
-                *hook.my_pack_hook(
                 inputmat_no_fp8 if weight.requires_grad and not fp8_wgrad else None,
                 inputmat_t if weight.requires_grad and fp8_wgrad else None,
                 weight_for_save if freeze_weight else weight,
                 weight_t_fp8 if fp8 else None,
-                fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,)
+                fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,
+                weight.main_grad if fuse_wgrad_accumulation and weight.requires_grad else None,
             )
             ctx.activation_dtype = activation_dtype
             ctx.fp8 = fp8
@@ -280,19 +294,28 @@ class _Linear(torch.autograd.Function):
         with _prepare_backward(
             ctx.fp8, ctx.fp8_meta, ctx.tp_group, ctx.tp_size, name="_Linear"
         ):
-            hook = get_pack_hook()
-            (
-                inputmat,
-                inputmat_t,
-                weight,
-                weight_t_fp8,
-                fwd_scale_inverses,
-            ) = hook.my_unpack_hook(*ctx.saved_tensors)
-
+            # hook = get_pack_hook()
+            # (
+            #     inputmat,
+            #     inputmat_t,
+            #     weight,
+            #     weight_t_fp8,
+            #     fwd_scale_inverses,
+            # ) = hook.my_unpack_hook(*ctx.saved_tensors)
+            inputmat, inputmat_t, weight, weight_t_fp8, fwd_scale_inverses, main_grad = ctx.saved_tensors
+            # (
+            #     inputmat,
+            #     inputmat_t,
+            #     weight,
+            #     weight_t_fp8,
+            #     fwd_scale_inverses,
+            # ) = ctx.activations.get_computable_form()
+            
             if chk_tensor_registered(weight):
                 weight = weight.get_computable_form()
-                torch.cuda.current_stream().synchronize()
-
+                # torch.cuda.current_stream().synchronize()
+            if ctx.fuse_wgrad_accumulation and weight.requires_grad:
+                weight.main_grad = main_grad
             
             # if args.lms:
             #     weight = weight.to(torch.cuda.current_device())

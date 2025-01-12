@@ -23,7 +23,7 @@ class ExecutionTimer:
     def push(self, tag):
         if self.start_time != None and self.end_time == None:
             #torch.cuda.synchronize()
-            torch.cuda.current_stream().synchronize()
+            # torch.cuda.current_stream().synchronize()
             current_time = time.time()
             self.tags.append((tag,current_time))
 
@@ -32,7 +32,7 @@ class ExecutionTimer:
             if self.tags != []:
                 popped_tag, start_time = self.tags.pop()
                 #torch.cuda.synchronize()
-                torch.cuda.current_stream().synchronize()
+                # torch.cuda.current_stream().synchronize()
                 now = time.time()
                 past_time = now - start_time
                 global_rank = torch.cuda.current_device()

@@ -167,6 +167,10 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         inference_params=None,
         packed_seq_params=None,
     ):
+        # main_stream = torch.cuda.default_stream()
+        # main_stream.synchronize()
+        torch.cuda.nvtx.range_push(f"TransformerLayer-{self.layer_number}")
+
         # hidden_states: [s, b, h]
 
         # Residual connection.
@@ -241,6 +245,9 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             inp=hidden_states, requires_grad=hidden_states.requires_grad, keep_graph=True
         )
 
+
+        # main_stream.synchronize()
+        torch.cuda.nvtx.range_pop()
         return output, context
 
     def sharded_state_dict(

@@ -545,9 +545,11 @@ def send_forward_recv_forward(
         wait_on_reqs=(not overlap_p2p_comm),
         config=config,
     )
+    #print("finish _communicate")
     if config.timers is not None:
         config.timers('forward-send-forward-recv').stop()
     if overlap_p2p_comm:
+        #print("return input_tensor, wait_handles")
         return input_tensor, wait_handles
     return input_tensor
 

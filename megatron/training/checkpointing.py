@@ -810,7 +810,7 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
             restore_modelopt_state(model, state_dict)
 
     # Model.
-    def make_llama_state_dict(state_dict):
+    def make_llama_state_dict(state_dict:dict):
         def make_chpt(d:dict,name:str):
             r = {}
             for key in d:                
@@ -823,6 +823,8 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
                 else:
                     r = {**r,**make_chpt(d[key],tmp_name)}
             return r
+        if state_dict.get('language_model') == None:
+            return state_dict
         m = make_chpt(state_dict['language_model'],"")
         real_m = {}
         lora=args.finetune_method != None and "lora" in args.finetune_method
@@ -883,43 +885,17 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
         else:
             model[0].load_state_dict(state_dict['model'], strict=strict)
     else:
+        from tensor_manager import set_stage_and_batch_id, finish_warmup
         for i in range(len(model)):
             mpu.set_virtual_pipeline_model_parallel_rank(i)
-        #     if args.llama_size != None:
-        #         def make_chpt(d:dict,name:str):
-        #             r = {}
-        #             for key in d:                
-        #                 if name != "":
-        #                     tmp_name = name+'.'+ str(key)
-        #                 else:
-        #                     tmp_name = key
-        #                 if torch.is_tensor(d[key]) or d[key] == None:
-        #                     r[tmp_name] = d[key]
-        #                 else:
-        #                     r = {**r,**make_chpt(d[key],tmp_name)}
-        #             return r
-        #         m = make_chpt(state_dict['model%d' % i]['language_model'],"")
-        #         real_m = {}
-        #         for key in m:
-        #             tmp = m[key]
-        #             key:str = key.replace("encoder","decoder").replace("dense_h_to_4h","linear_fc1")\
-        #                 .replace("input_norm","self_attention.qkv_layernorm")\
-        #                     .replace("post_attention_norm","mlp.pre_norm")\
-        #                         .replace("query_key_value","linear_qkv")\
-        #                             .replace("dense_4h_to_h","linear_fc2")\
-        #                                 .replace("final_norm","final_layernorm")
-        #             key = key.replace("dense","linear_proj")
-
-        #             print(key)
-        #             real_m[key] = tmp
-        #         model[i].load_state_dict(real_m, strict=False)
-        #     else:
+            set_stage_and_batch_id(i)
 
             if args.llama_size != None:
                 real_m = make_llama_state_dict(state_dict['model%d' % i])
                 model[i].load_state_dict(real_m, strict=strict)
             else:
                 model[i].load_state_dict(state_dict['model%d' % i], strict=strict)
+        finish_warmup()
 
     # Fix up query/key/value matrix ordering if needed.
     checkpoint_version = get_checkpoint_version()

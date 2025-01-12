@@ -64,7 +64,7 @@ class Attention(MegatronModule, ABC):
         attention_type: str,
     ):
         super().__init__(config=config)
-        self.aaa = 0
+        self.casual = False
         self.config = config
         self.layer_number = layer_number
         self.attn_mask_type = attn_mask_type
@@ -107,10 +107,10 @@ class Attention(MegatronModule, ABC):
             tp_comm_buffer_name='proj',
         )
         
-        if "lora" in config.finetune_method and config.recompute_method == "block" and False:
-            self.forward = self._checkpointed_forward
-        else:
-            self.forward = self.real_forward
+        # if "lora" in config.finetune_method and config.recompute_method == "block" and False:
+        #     self.forward = self._checkpointed_forward
+        # else:
+        self.forward = self.real_forward
 
     def _checkpointed_attention_forward(
         self,
@@ -298,6 +298,8 @@ class Attention(MegatronModule, ABC):
     ):
         # hidden_states: [sq, b, h]
         if self.config.profile:
+            # main_stream = torch.cuda.current_stream()
+            # main_stream.synchronize()
             torch.cuda.nvtx.range_push("attention")
             from megatron.training.global_vars import get_self_define_timer
             timer = get_self_define_timer()
@@ -308,6 +310,9 @@ class Attention(MegatronModule, ABC):
         # For self attention we just duplicate the rotary_pos_emb if it isn't already
         if rotary_pos_emb is not None and not isinstance(rotary_pos_emb, tuple):
             rotary_pos_emb = (rotary_pos_emb,) * 2
+
+        #'NoneType' object has no attribute 'key_value_memory_dict'
+        is_first_step = self.training or (inference_params is None or self.layer_number not in inference_params.key_value_memory_dict)
 
         # =====================
         # Query, Key, and Value
@@ -352,7 +357,8 @@ class Attention(MegatronModule, ABC):
         # ==================================
         # core attention computation
         # ==================================
-        torch.cuda.synchronize()
+        # main_stream = torch.cuda.current_stream()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_push("core_attention")
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
@@ -371,12 +377,13 @@ class Attention(MegatronModule, ABC):
                 attention_mask,
                 attn_mask_type=attn_mask_type,
                 packed_seq_params=packed_seq_params,
-                dot_func=self.aaa != 0
+                dot_func=not is_first_step
+                # dot_func=self.casual != False
             )
         core_attn_out = core_attn_out.transpose(1, 2).contiguous()
         core_attn_out = core_attn_out.view(b, sq, -1)
         core_attn_out = core_attn_out.permute(1,0,2)
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
         if packed_seq_params is not None:
@@ -389,16 +396,17 @@ class Attention(MegatronModule, ABC):
         # =================
         # Output. [sq, b, h]
         # =================
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_push("linear_proj")
         output, bias = self.linear_proj(core_attn_out)
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
         if self.config.profile:
+            # main_stream.synchronize()
             torch.cuda.nvtx.range_pop()
             timer.pop()
         if not self.training:
-            self.aaa += 1
+            self.casual = True
         return output, bias
 
 
@@ -582,7 +590,8 @@ class SelfAttention(Attention):
         Derives `query`, `key` and `value` tensors from `hidden_states`.
         """
         # Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)]
-        torch.cuda.synchronize()
+        # main_stream = torch.cuda.current_stream()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_push(f"Layer {self.layer_number} get_query_key_value_tensors")
         if self.qkv_layernorm is not None:
             torch.cuda.nvtx.range_push(f"Layer {self.layer_number} qkv_layernorm")
@@ -595,7 +604,7 @@ class SelfAttention(Attention):
             torch.cuda.nvtx.range_pop()
         torch.cuda.nvtx.range_push(f"Layer {self.layer_number} linear_qkv")
         mixed_qkv, _ = self.linear_qkv(norm_hidden_states)
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
         # [sq, b, hp] --> [sq, b, ng, (np/ng + 2) * hn]
@@ -608,7 +617,7 @@ class SelfAttention(Attention):
             ),
         )
         mixed_qkv = mixed_qkv.view(*new_tensor_shape)
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
         torch.cuda.nvtx.range_push(f"Layer {self.layer_number} split")
@@ -630,7 +639,7 @@ class SelfAttention(Attention):
 
             # [sq, b, ng, (np/ng + 2) * hn] --> [sq, b, ng, np/ng * hn], [sq, b, ng, hn], [sq, b, ng, hn]
             (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3,)
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
         # [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
@@ -644,7 +653,7 @@ class SelfAttention(Attention):
 
         if self.config.test_mode:
             self.run_realtime_tests()
-        torch.cuda.synchronize()
+        # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
         return query, key, value

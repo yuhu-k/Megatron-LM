@@ -220,6 +220,7 @@ def model_parallel_cuda_manual_seed(seed):
     )
     _CUDA_RNG_STATE_TRACKER.add(_EXPERT_PARALLEL_RNG_TRACKER_NAME, expert_parallel_seed)
 
+from tensor_manager import register_activation, get_in_gpu_ratio, pause_tensor_manager, resume_tensor_manager
 
 class CheckpointFunction(torch.autograd.Function):
     """Checkpoint Function 
@@ -238,10 +239,12 @@ class CheckpointFunction(torch.autograd.Function):
         ctx.fwd_cpu_rng_state = torch.get_rng_state()
         ctx.fwd_cuda_rng_state = torch.cuda.get_rng_state()
         ctx.fwd_cuda_rng_state_tracker = get_cuda_rng_tracker().get_states()
-
+        # torch.cuda.current_stream().synchronize()
+        # print("before",torch.cuda.memory_allocated()/1024/1024)
         with torch.no_grad():
             outputs = run_function(*args)
-
+        # torch.cuda.current_stream().synchronize()
+        # print("after",torch.cuda.memory_allocated()/1024/1024)
         # Divide hidden states across model parallel group and only keep
         # the chunk corresponding to the current rank.
         if distribute_saved_activations:
@@ -249,10 +252,27 @@ class CheckpointFunction(torch.autograd.Function):
             safely_set_viewless_tensor_data(
                 args[0], split_tensor_into_1d_equal_chunks(args[0].data, new_buffer=True)
             )
+        # # Store everything.
+        # print(args)
+        # print("id", ctx)
+        ctx.activation = register_activation(*args)
+        # saved_args = []
+        # saved_args_data = []
+        # for arg in args:
+        #     if torch.is_tensor(arg):
+        #         data = arg.data
+        #         if deallocate_output_tensor(arg):
+        #             saved_args.append(arg)
+        #             saved_args_data.append(data)
+        #         else:
+        #             saved_args.append(arg)
+        #             saved_args_data.append(None)
+        #     else:
+        #         saved_args.append(arg)
+        #         saved_args_data.append(None)
+        # ctx.activation_data = register_activation(*saved_args_data)
 
-        # Store everything.
-        hook = get_pack_hook()
-        ctx.save_for_backward(*hook.my_pack_hook(*args))
+        # ctx.save_for_backward(*saved_args)
 
         return outputs
 
@@ -263,8 +283,20 @@ class CheckpointFunction(torch.autograd.Function):
                 "Checkpointing is not compatible with .grad(), "
                 "please use .backward() if possible"
             )
-        hook = get_pack_hook()
-        inputs = hook.my_unpack_hook(*ctx.saved_tensors)
+        # inputs = ctx.saved_tensors
+        inputs = ctx.activation.get_computable_form()
+        # for i in range(len(inputs_data)):
+        #     if inputs_data[i] is not None:
+        #         inputs[i].data = inputs_data[i]
+        # print("id", ctx)
+        # print("inputs",inputs)
+
+        # def pack_hook(x:torch.Tensor):
+        #     return x
+        # def unpack_hook(packed):
+        #     return packed
+        # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+        pause_tensor_manager()
         if ctx.distribute_saved_activations:
             safely_set_viewless_tensor_data(
                 inputs[0], gather_split_1d_tensor(inputs[0].data).view(ctx.input_0_shape)
@@ -292,11 +324,13 @@ class CheckpointFunction(torch.autograd.Function):
 
         if isinstance(outputs, torch.Tensor):
             outputs = (outputs,)
+        
 
         # filter out non tensor outputs for backward pass
         outputs, args = zip(*filter(lambda x: torch.is_tensor(x[0]), zip(outputs, args)))
         torch.autograd.backward(outputs, args)
         grads = tuple(inp.grad if isinstance(inp, torch.Tensor) else inp for inp in detached_inputs)
+        resume_tensor_manager()
         return (None, None) + grads
 
 

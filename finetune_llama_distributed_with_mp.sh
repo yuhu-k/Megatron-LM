@@ -6,15 +6,19 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0,1
 
 
-GPUS_PER_NODE=2
+
+GPUS_PER_NODE=1
 MODEL_TYPE="7b" #"13b"
 # Change for multinode config
-MASTER_ADDR=compute1 #eclab3080
+MASTER_ADDR=compute2 #eclab3080
 MASTER_PORT=6000
 NNODES=1
+if [ $# -ne 0 ]; then
+    NNODES=$@
+fi
 WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 HOSTNAME=$(hostname)
-TIME=$(date '+%Y-%m-%d_%H:%M')
+TIME=$(date '+%Y-%m-%d_%Hh%Mm')
 
 if [[ $HOSTNAME == *4090* ]]; then
     export NCCL_DEBUG=INFO && export NCCL_SOCKET_IFNAME=eno2 && export GLOO_SOCKET_IFNAME=eno2
@@ -35,25 +39,30 @@ elif [[ $MODEL_TYPE == 34b* ]]; then
     LAYER_NUM=48
 elif [[ $MODEL_TYPE == 70b* ]]; then
     # TPdegree=8
-    LAYER_NUM=40
+    LAYER_NUM=80
 else
     echo "MODEL_TYPE 設定有誤: $MODEL_TYPE"
-	return
 fi
 
 TPdegree=1
-PPdegree=2
+PPdegree=1
 DPdegree=$(( WORLD_SIZE / TPdegree / PPdegree ))
 VPPdegree=1
 GLOBAL_BATCH_SIZE=16
-
-if [[ $VPPdegree == 1 ]]; then
-    CHECKPOINT_PATH=/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
+if [[ $MODEL_TYPE == 70b* ]]; then
+    CHECKPOINT_PATH_BASE=/tmp2/llama2/llama-2-${MODEL_TYPE}-me/hf
 else
-    CHECKPOINT_PATH=/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}-vpp${VPPdegree}
+    CHECKPOINT_PATH_BASE=/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf
+fi
+# CHECKPOINT_PATH_BASE=/tmp2/llama2/llama-2-${MODEL_TYPE}-me/hf
+if [[ $VPPdegree == 1 ]]; then
+    CHECKPOINT_PATH=${CHECKPOINT_PATH_BASE}/tp${TPdegree}-pp${PPdegree}
+else
+    CHECKPOINT_PATH=${CHECKPOINT_PATH_BASE}/tp${TPdegree}-pp${PPdegree}-vpp${VPPdegree}
 fi
 #CHECKPOINT_PATH=/tmp2/llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
-DATA_PATH=/tmp2/Megatron-LM/dataset2/llama-data_text_document
+# DATA_PATH=/tmp2/Megatron-LM/wizardlm_orca_dataset/output_instruction_document
+ DATA_PATH=/tmp2/Megatron-LM/wizardlm_dataset_2/output_instruction_document
 RESULTS_PATH=/tmp2/Megatron-LM/results/$HOSTNAME/$TIME
 TOKENIZER_MODEL=/tmp2/Megatron-LM/tokenizer.model
 
@@ -110,7 +119,7 @@ GPT_ARGS="
 	--position-embedding-type rope \
 	--no-masked-softmax-fusion \
 	--attention-softmax-in-fp32 \
-    --train-iters  $(echo "scale=0; 50002 / $GLOBAL_BATCH_SIZE * 0.9 / 1" | bc)\
+    --train-iters  $(echo "scale=0; 54974 / $GLOBAL_BATCH_SIZE * 0.9 / 1" | bc)\
     --recompute-num-layers $(($LAYER_NUM / $PPdegree / $VPPdegree)) \
     --recompute-method block \
     --recompute-granularity full \
@@ -123,12 +132,15 @@ GPT_ARGS="
 
 LLAMA_ARGS="
     --llama-size ${MODEL_TYPE} \
+    --llama \
     --swiglu \
 "
-    # --overlap-dequantize
     # --finetune-mlp \
-    # --swap-weight
+    #     \         \
 
+    # --swap-weight \
+    # --offload-activation \
+    # --overlap-dequantize
 
 
 
@@ -250,7 +262,7 @@ LMS_ARGS="
 
 
 
-nsys profile $NSYS_ARGS \
+# nsys profile $NSYS_ARGS \
 torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     --distributed-backend nccl \
     $GPT_ARGS \
@@ -258,10 +270,11 @@ torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     $DATA_ARGS \
     $OUTPUT_ARGS \
     $LLAMA_ARGS \
-    --finetune-method qlora \
+    --finetune-method lora \
     --transformer-impl transformer_engine \
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \
     $PROF_ARGS \
+    # $LMS_ARGS
     # --skip-train
     # --topk-k-rate 0.1

@@ -2,27 +2,34 @@
 
 
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
-MODEL_TYPE="70b"
+#MODEL_TYPE="13b-chat"
+MODEL_TYPE="70b-chat"
 
 GLOBAL_SIZE=4 # GPUs' num
 
-if [[ $MODEL_TYPE == 7b* ]]; then
-    TP=1
-elif [[ $MODEL_TYPE == 13b* ]]; then
-    TP=2
-elif [[ $MODEL_TYPE == 70b* ]]; then
-    TP=8
-else
-    echo "MODEL_TYPE 設定有誤: $MODEL_TYPE"
-fi
-TP=1
-PP=2
-VPP=1
+#if [[ $MODEL_TYPE == 7b* ]]; then
+#    TP=1
+#elif [[ $MODEL_TYPE == 13b* ]]; then
+#    TP=2
+#elif [[ $MODEL_TYPE == 70b* ]]; then
+#    TP=8
+#else
+#    echo "MODEL_TYPE 設定有誤: $MODEL_TYPE"
+#fi
 
-# LLAMA_META_FORMAT_DIR="/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-hf"
-#LLAMA_META_FORMAT_DIR="/tmp2/Llama-2-${MODEL_TYPE}-hf"
+TP=1
+PP=4
+VPP=2
+
+#LLAMA_META_FORMAT_DIR="/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-hf"
+# LLAMA_META_FORMAT_DIR="/tmp2/Llama-2-${MODEL_TYPE}-hf"
 LLAMA_META_FORMAT_DIR="/home/yuhu/Llama-2-${MODEL_TYPE}-hf"
-MEGATRON_FORMAT_DIR="/home/yuhu/llama-2-${MODEL_TYPE}-me/hf/tp${TP}-pp${PP}-vpp${VPP}"
+# MEGATRON_FORMAT_DIR="/home/yuhu/llama-2-${MODEL_TYPE}-me/hf/tp${TP}-pp${PP}-vpp${VPP}"
+if [ $VPP -eq 1 ]; then
+    MEGATRON_FORMAT_DIR="/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf/tp${TP}-pp${PP}"
+else
+    MEGATRON_FORMAT_DIR="/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf/tp${TP}-pp${PP}-vpp${VPP}"
+fi
 TOKENIZER_MODEL="$LLAMA_META_FORMAT_DIR/tokenizer.model"
 
 if [ -d $MEGATRON_FORMAT_DIR ]; then

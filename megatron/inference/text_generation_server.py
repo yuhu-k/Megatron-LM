@@ -221,7 +221,7 @@ class MegatronGenerate(Resource):
                         stop_on_eol=stop_on_eol,
                         prevent_newline_after_colon=prevent_newline_after_colon,
                         random_seed=random_seed)
-
+                    print("response: ", response)
                     return jsonify({"text": response,
                         "segments": response_seg,
                         "logprobs": response_logprobs})

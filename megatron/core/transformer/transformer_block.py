@@ -63,34 +63,6 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
 
     return num_layers_to_build
 
-class TopKFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input, k):
-        # 在第二个维度上拆分张量
-        tensors = torch.split(input, 1, dim=1)
-        results = []
-        for t in tensors:
-            t_tmp = t
-            t = t.contiguous().reshape(-1)
-            abs_dense_tensor = torch.abs(t)
-            values, indices = torch.topk(abs_dense_tensor, int(abs_dense_tensor.numel() * k))
-            tmp_indices = indices.to(torch.uint16)
-            values = t[indices]
-            compressed_dense_tensor = torch.zeros_like(t_tmp)
-            compressed_dense_tensor.reshape(-1)[indices] = t[indices]
-            results.append(compressed_dense_tensor)
-        # 在第二个维度上合并结果
-        result_tensor = torch.cat(results, dim=1)
-        # ctx.save_for_backward(input, indices)
-        return result_tensor
-    
-    @staticmethod
-    def backward(ctx, grad_output:torch.Tensor):
-        # input, indices = ctx.saved_tensors
-        # grad_input = torch.zeros_like(input)
-        # grad_input[indices] = grad_output
-        return grad_output, None  # 第二个 None 对应于 k，不需要梯度
-
 
 @dataclass
 class TransformerBlockSubmodules:
@@ -241,6 +213,7 @@ class TransformerBlock(MegatronModule):
                 packed_seq_params,
             ):
                 for index in range(start, end):
+                    # print(f"index: {index}")
                     layer = self._get_layer(index)
                     hidden_states, context = layer(
                         hidden_states=hidden_states,
@@ -302,6 +275,7 @@ class TransformerBlock(MegatronModule):
                 # Skip recomputation when input grad computation is not needed.
                 # Need to have at least one input tensor with gradient computation
                 # for re-enterant autograd engine.
+                # print(f"l: {l}")
                 if self.config.fp8 and not hidden_states.requires_grad:
                     recompute_skip_num_layers += 1
                 if (
@@ -506,8 +480,4 @@ class TransformerBlock(MegatronModule):
 
         return sharded_state_dict
     
-    def activation_compression(self, activation: torch.Tensor) -> tuple[torch.Tensor,torch.Tensor]:
-        if self.k > 1:
-            raise "Error, compression rate must be smaller than 1"
-        else:
-            return TopKFunction.apply(activation, self.k/2)
+

@@ -590,6 +590,8 @@ def core_transformer_config_from_args(args, config_class=None):
     for f in dataclasses.fields(config_class):
         if hasattr(args, f.name):
             kw_args[f.name] = getattr(args, f.name)
+    if args.use_pytorch_profiler:
+        args.profile = False
     kw_args['persist_layer_norm'] = not args.no_persist_layer_norm
     kw_args['layernorm_zero_centered_gamma'] = args.apply_layernorm_1p
     kw_args['layernorm_epsilon'] = args.norm_epsilon
@@ -606,10 +608,13 @@ def core_transformer_config_from_args(args, config_class=None):
     kw_args['finetune_lora_quantize_base'] = args.finetune_lora_quantize_base
     kw_args['finetune_mlp'] = args.finetune_mlp
     kw_args['profile'] = args.profile
+    kw_args['use_pytorch_profiler'] = args.use_pytorch_profiler
     kw_args['swap_weight'] = args.swap_weight
     kw_args['llama_size'] = args.llama_size
     kw_args['topk_k_rate'] = args.topk_k_rate
     kw_args['overlap_dequantize'] = args.overlap_dequantize
+    kw_args['mobius'] = args.mobius
+    kw_args['within_stage'] = args.within_stage
     if args.swiglu:
         kw_args['activation_func'] = F.silu
         kw_args['gated_linear_unit'] = True
@@ -1019,6 +1024,8 @@ def _add_training_args(parser):
                        '-o <path/to/output_file> --force-overwrite true '
                        '--capture-range=cudaProfilerApi '
                        '--capture-range-end=stop`.')
+    group.add_argument('--use-pytorch-profiler', action='store_true',
+                        help='Enable torch profiler, disable nvtx profiling')
     group.add_argument('--profile-step-start', type=int, default=10,
                        help='Global step to start profiling.')
     group.add_argument('--profile-step-end', type=int, default=12,
@@ -1194,6 +1201,13 @@ def _add_training_args(parser):
     
     group.add_argument('--overlap-dequantize', action='store_true', default=False,
                         help="Overlap the dequantize time of qlora")
+    group.add_argument('--mobius', action='store_true', default=False,
+                        help="mobius gpipe schedule")
+    group.add_argument('--within_stage', action='store_true', default=False,
+                        help="propose schedule")
+    
+    group.add_argument('--llama', action='store_true', default=False,
+                        help="load dataset to llama format")
 
     return parser
 

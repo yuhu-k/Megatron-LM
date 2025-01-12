@@ -9,6 +9,8 @@ import logging
 import math
 import os
 import sys
+
+import torch.distributed
 from .log_handler import CustomHandler
 # Make default logging level INFO, but filter out all log messages not from MCore.
 logging.basicConfig(handlers=[CustomHandler()], level=logging.INFO)
@@ -158,6 +160,57 @@ def get_start_time_from_progress_log():
     return datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S'), \
         start_num_floating_point_operations
 
+def redirect_print():
+    _print = print  
+
+    gpu = torch.cuda.current_device()
+    
+    # import logging
+
+    # # 設定 logging
+    # logger = logging.getLogger()
+    # logger.setLevel(logging.DEBUG)
+
+    # # 建立控制台處理器
+    # console_handler = logging.StreamHandler()
+    # console_handler.setLevel(logging.DEBUG)
+
+    # # 建立文件處理器
+    # file_handler = logging.FileHandler("output.log")
+    # file_handler.setLevel(logging.DEBUG)
+
+    # # 設定格式
+    # formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    # console_handler.setFormatter(formatter)
+    # file_handler.setFormatter(formatter)
+
+    # # 將處理器添加到 logger
+    # logger.addHandler(console_handler)
+    # logger.addHandler(file_handler)
+    class Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+
+        def write(self, data):
+            for stream in self.streams:
+                stream.write(data)
+                stream.flush()  # 確保即時刷新
+
+        def flush(self):
+            for stream in self.streams:
+                stream.flush()
+    stdout_log_file = open(f"/tmp2/yuhu/output_stdout_{gpu}.log", "w")
+    stderr_log_file = open(f"/tmp2/yuhu/output_stderr_{gpu}.log", "w")
+    sys.stdout = Tee(sys.stdout, stdout_log_file)  # 同時輸出到 shell 和文件
+    sys.stderr = Tee(sys.stderr, stderr_log_file)  # 同時輸出到 shell 和文件
+    
+    # def ranked_stderr_print(*args, **options):
+    #     #_print(f"[{gpu}]", *args, **options, file=sys.stdout)
+    #     logger.info(f"[{gpu}] {" ".join([str(arg) for arg in args])}")
+
+    # import builtins
+
+    # builtins.print = ranked_stderr_print
 
 def pretrain(train_valid_test_dataset_provider,
              model_provider,
@@ -208,7 +261,8 @@ def pretrain(train_valid_test_dataset_provider,
         device = ipc_object.device
         lms.init(device, args, enable_multi_gpu=True, ipc_object=ipc_object, skip_sync_iterations=-1)
     lms.init_pack_hook(args.profile, args.lms, args.lms_swap_nonblocking)
-    init_tensor_manager()
+    redirect_print()
+    init_tensor_manager(args.virtual_pipeline_model_parallel_size if args.virtual_pipeline_model_parallel_size is not None else 1, args.global_batch_size//args.micro_batch_size, args.offload_activation)
     if torch.distributed.get_rank() == 0:
         init_recorder()
     
@@ -268,6 +322,8 @@ def pretrain(train_valid_test_dataset_provider,
                 train_valid_test_dataset_provider)
     timers('train/valid/test-data-iterators-setup').stop()
     print_datetime('after dataloaders are built')
+    torch.cuda.synchronize()
+    print_rank_0("Memory allocated on cuda after build data iterators: {} GB".format(torch.cuda.memory_allocated() / 1024**3))
 
     # Context used for persisting some state between checkpoint saves.
     checkpointing_context = {}
@@ -293,25 +349,32 @@ def pretrain(train_valid_test_dataset_provider,
         #                             iteration, process_non_loss_data_func, config,
         #                             verbose=True, write_to_tensorboard=not args.skip_train)
         if args.do_train and args.train_iters > 0:
-            if args.offload_activation:
-                def pack_hook(x:torch.Tensor):
-                    return (x.device, x.to("cpu", non_blocking=True))
+            # if args.offload_activation:
+            #     from tensor_manager import register_activation, PackTensorList
+            #     def pack_hook(x:torch.Tensor):
+            #         with torch.enable_grad():
+            #             return (x.device, x.to("cpu", non_blocking=True))
                     
-                def unpack_hook(packed: tuple[int, torch.Tensor]):
-                    device, tensor = packed
-                    return tensor.to(device)
-                with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-                    iteration, num_floating_point_operations_so_far = train(
-                        forward_step_func,
-                        model, optimizer, opt_param_scheduler,
-                        train_data_iterator, valid_data_iterator,
-                        process_non_loss_data_func, config, checkpointing_context)
-            else:
-                iteration, num_floating_point_operations_so_far = train(
-                    forward_step_func,
-                    model, optimizer, opt_param_scheduler,
-                    train_data_iterator, valid_data_iterator,
-                    process_non_loss_data_func, config, checkpointing_context)
+            #     def unpack_hook(packed: tuple[int, torch.Tensor]):
+            #         device, tensor = packed
+            #         with torch.enable_grad():
+            #             return tensor.to(device, non_blocking=True)
+            #     def pack_hook(x:torch.Tensor):
+            #         return register_activation(x)
+            #     def unpack_hook(packed: PackTensorList):
+            #         return packed.get_computable_form()
+            #     with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+            #         iteration, num_floating_point_operations_so_far = train(
+            #             forward_step_func,
+            #             model, optimizer, opt_param_scheduler,
+            #             train_data_iterator, valid_data_iterator,
+            #             process_non_loss_data_func, config, checkpointing_context)
+            # else:
+            iteration, num_floating_point_operations_so_far = train(
+                forward_step_func,
+                model, optimizer, opt_param_scheduler,
+                train_data_iterator, valid_data_iterator,
+                process_non_loss_data_func, config, checkpointing_context)
 
         print_datetime('after training is done')
 
@@ -928,8 +991,11 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
         total_loss_dict[skipped_iters_key] = 0
         total_loss_dict[nan_iters_key] = 0
         print_rank_last(log_string)
-        # with open("/tmp2/loss.csv","a") as f:
-        #     f.write(f"{args.topk_k_rate if args.topk_k_rate != None else 1}, {iteration}, {avg}\n")
+        # print_rank_0(log_string)
+        if mpu.is_pipeline_last_stage(ignore_virtual=True):
+            print(loss_dict)
+            with open("/tmp2/yuhu/loss.csv","a") as f:
+                f.write(f"{iteration}, {avg}\n")
         if report_memory_flag and learning_rate > 0.:
             # Report memory after optimizer state has been initialized.
             if torch.distributed.get_rank() == 0:
@@ -1098,7 +1164,23 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                 'train_iterations_time_msecs_avg': train_iterations_time_msecs_avg,
                 'validation_iterations_time_msecs_avg': validation_iterations_time_msecs_avg
             })
-            
+
+    # using pytorch profiler
+    prof = None    
+    if torch.distributed.get_rank() in args.profile_ranks and args.use_pytorch_profiler:
+        prof = torch.profiler.profile(
+        schedule=torch.profiler.schedule(
+            wait=max(args.profile_step_start-1, 0),
+            warmup=1 if args.profile_step_start > 0 else 0,
+            active=args.profile_step_end-args.profile_step_start,
+            repeat=1),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(args.tensorboard_dir),
+        profile_memory=True,
+        #record_shapes=True,
+        with_stack=True)
+        prof.start()
+
+
     if torch.distributed.get_rank() == 0:
         progress_bar = tqdm(total=args.train_iters, desc='finetuning...', unit='iteration')
     if args.profile:
@@ -1117,6 +1199,10 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             if global_rank == 0:
                 recorder = get_recorder()
                 recorder.start()
+        if args.use_pytorch_profiler and \
+           torch.distributed.get_rank() in args.profile_ranks:
+            prof.step()
+            
         maybe_finalize_async_save(False)
 
         # Update number of microbatches first without consistency check to decide if a
@@ -1278,7 +1364,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
            torch.distributed.get_rank() in args.profile_ranks:
             if global_rank == 0:
                 recorder.end()
-                print(f"average finetuning speed: {recorder.get_speed() } token/sec")
+                print(f"average finetuning speed: {recorder.get_speed()} token/sec")
             with open("/tmp2/yuhu.txt", "a") as f:
                 device = torch.cuda.current_device()
                 s1 = f"Max memory allocated on cuda:{device}: {torch.cuda.max_memory_allocated(device)/(1024**3)} GB"
@@ -1291,11 +1377,18 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             print(s1)
             print(s2)
             print(s3)
-            from megatron.core.transformer.transformer_block import arraypp
-            import numpy as np
-            if isinstance(arraypp, np.ndarray):
-                np.save("/tmp2/activaton.npy", arraypp)
+            # from megatron.core.transformer.transformer_block import arraypp
+            # import numpy as np
+            # if isinstance(arraypp, np.ndarray):
+            #     np.save("/tmp2/activaton.npy", arraypp)
             torch.cuda.cudart().cudaProfilerStop()
+
+        if args.use_pytorch_profiler and \
+           iteration == args.profile_step_end and \
+           torch.distributed.get_rank() in args.profile_ranks:
+            assert prof is not None
+            prof.stop()
+            break
 
         if args.manual_gc:
             if args.manual_gc_interval != 0 and iteration % args.manual_gc_interval == 0:
@@ -1490,7 +1583,7 @@ def evaluate_and_print_results(prefix, forward_step_func,
     print_rank_last('-' * length)
     
     with open("/tmp2/loss.csv", "a") as f:
-        f.write(f"{args.topk_k_rate if args.topk_k_rate else 1}, {iteration}, {loss}, {ppl}\n")
+        f.write(f"{iteration}, {loss}, {ppl}\n")
 
 
 def cyclic_iter(iter):

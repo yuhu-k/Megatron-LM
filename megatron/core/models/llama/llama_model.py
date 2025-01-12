@@ -81,6 +81,9 @@ class LLaMAModel(LanguageModule):
                 max_sequence_length=self.max_sequence_length,
                 position_embedding_type=position_embedding_type,
             )
+            for param in self.embedding.parameters():
+                param.requires_grad = False
+                print("Embedding memory size: ", int(param.numel()) * (2 if param.dtype == torch.float16 else 4))
             
         if self.position_embedding_type == 'rope':
             self.rotary_pos_emb = RotaryEmbedding(
@@ -90,6 +93,9 @@ class LLaMAModel(LanguageModule):
                 seq_len_interpolation_factor=seq_len_interpolation_factor,
                 rotary_base=rotary_base,
             )
+            for param in self.rotary_pos_emb.parameters():
+                param.requires_grad = False
+                print("Rotary memory size: ", int(param.numel()) * (2 if param.dtype == torch.float16 else 4))
 
         # Transformer.
         self.decoder = TransformerBlock(
@@ -146,7 +152,6 @@ class LLaMAModel(LanguageModule):
             )
 
         else:
-            self.test_layer = None
             self.output_layer = None
 
         if self.pre_process or self.post_process:
