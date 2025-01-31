@@ -404,10 +404,11 @@ def backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, c
         output_tensor[0] = config.grad_scale_func(output_tensor[0])
 
     if output_tensor[0].requires_grad == True:
-        if config.deallocate_pipeline_outputs:
-            custom_backward(output_tensor[0], output_tensor_grad[0])
-        else:
-            torch.autograd.backward(output_tensor[0], grad_tensors=output_tensor_grad[0])
+        # with torch.autograd.detect_anomaly():
+            if config.deallocate_pipeline_outputs:
+                custom_backward(output_tensor[0], output_tensor_grad[0])
+            else:
+                torch.autograd.backward(output_tensor[0], grad_tensors=output_tensor_grad[0])
 
     # Collect the grad of the input_tensor.
     input_tensor_grad = [None]
@@ -832,9 +833,6 @@ def forward_backward_pipelining_with_interleaving(
 
     fwd_wait_handles = None
     bwd_wait_handles = None
-    
-    print("============== config.overlap_p2p_comm:"
-          ,config.overlap_p2p_comm, "==================")
 
     for k in range(num_warmup_microbatches):
 
@@ -1392,8 +1390,14 @@ def forward_backward_pipelining_without_interleaving(
             )
         else:
             checkpoint_activations_microbatch = None
-
+        if config.profile:
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_push("recv forward")
         input_tensor = recv_forward(recv_tensor_shapes, config)
+        if config.profile:
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_push("forward_step")
         output_tensor, num_tokens = forward_step(
             forward_step_func,
             data_iterator,
@@ -1407,7 +1411,14 @@ def forward_backward_pipelining_without_interleaving(
             check_first_val_step(first_val_step, forward_only, i == 0),
             current_microbatch=i,
         )
+        if config.profile:
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_push("send_forward")
         send_forward(output_tensor, send_tensor_shapes, config)
+        if config.profile:
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_pop()
         total_num_tokens += num_tokens.item()
 
         if not forward_only:
@@ -1420,6 +1431,7 @@ def forward_backward_pipelining_without_interleaving(
     # receive this tensor here.
     if num_microbatches_remaining > 0:
         if config.profile:
+            torch.cuda.synchronize()
             torch.cuda.nvtx.range_push("recv forward")
             timer = get_self_define_timer()
             timer.push("recv forward")
@@ -1440,6 +1452,9 @@ def forward_backward_pipelining_without_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
+        if config.profile:
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_push("forward_step")
         output_tensor, num_tokens = forward_step(
             forward_step_func,
             data_iterator,
@@ -1455,11 +1470,14 @@ def forward_backward_pipelining_without_interleaving(
             ),
             current_microbatch=i + num_warmup_microbatches,
         )
+        if config.profile:
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_pop()
                 
         if config.calculate_per_token_loss:
             if config.profile:
+                torch.cuda.synchronize()
                 torch.cuda.nvtx.range_push("total_num_tokens")
-                
                 timer = get_self_define_timer()
                 timer.push("total_num_tokens")
             total_num_tokens += num_tokens.item()
@@ -1468,13 +1486,19 @@ def forward_backward_pipelining_without_interleaving(
                     timer.pop()
 
         if forward_only:
+            if config.profile:
+                torch.cuda.synchronize()
+                torch.cuda.nvtx.range_push("send_forward")
             send_forward(output_tensor, send_tensor_shapes, config)
-
+            if config.profile:
+                torch.cuda.synchronize()
+                torch.cuda.nvtx.range_pop()
             if not last_iteration:
                 input_tensor = recv_forward(recv_tensor_shapes, config)
 
         else:
             if config.profile:
+                torch.cuda.synchronize()
                 torch.cuda.nvtx.range_push("send_forward_recv_backward")
                 
                 timer = get_self_define_timer()
@@ -1504,9 +1528,13 @@ def forward_backward_pipelining_without_interleaving(
                 torch.cuda.synchronize()
                 torch.cuda.nvtx.range_pop()
                 timer.pop()
+                torch.cuda.nvtx.range_push("backward_step")
             input_tensor_grad = backward_step(
                 input_tensor, output_tensor, output_tensor_grad, model_type, config
             )
+            if config.profile:
+                torch.cuda.synchronize()
+                torch.cuda.nvtx.range_pop()
 
             if last_iteration:
                 input_tensor = None
@@ -1897,9 +1925,6 @@ def forward_backward_pipelining_overlap_dequantization(
     #     f.write(f"size: {pipeline_parallel_size} {virtual_pipeline_parallel_size}\n")
     #     f.write("forward:\n")
 
-    print("============== config.overlap_p2p_comm:"
-          ,config.overlap_p2p_comm, "==================")
-
     from tensor_manager import set_stage_and_batch_id, total_moving_time
 
     for k in range(num_warmup_microbatches):
@@ -1916,10 +1941,12 @@ def forward_backward_pipelining_overlap_dequantization(
         current_microbatch = get_microbatch_id_in_model_chunk(k, forward=True)
 
         # print(f"Forward iteration {k}:\n model id: {cur_model_chunk_id}\n microbatch id: {current_microbatch}\n")
+        print(f"Memory allocate before forward {k}",torch.cuda.memory_allocated()/1024/1024/1024, "GB")
         set_stage_and_batch_id(cur_model_chunk_id, current_microbatch, "forward")
         output_tensor = forward_step_helper(
             k, current_microbatch, checkpoint_activations_microbatch
         )
+        print("Memory allocate after forward",torch.cuda.memory_allocated()/1024/1024/1024, "GB")
         # with open(f"/tmp2/yuhu-{torch.cuda.current_device()}.txt","a") as f:
         #     f.write(f" forward complete\n")
         # Determine if tensor should be received from previous stage.
@@ -2042,8 +2069,10 @@ def forward_backward_pipelining_overlap_dequantization(
             microbatch_id = get_microbatch_id_in_model_chunk(k, forward=False)
 
             # print(f"Backward iteration {k}:\n model id: {cur_model_chunk_id}\n microbatch id: {microbatch_id}\n")
+            print("Memory allocate before backward",torch.cuda.memory_allocated()/1024/1024/1024, "GB")
             set_stage_and_batch_id(cur_model_chunk_id, microbatch_id, "backward")
             input_tensor_grad = backward_step_helper(k)
+            print("Memory allocate before backward",torch.cuda.memory_allocated()/1024/1024/1024, "GB")
             
             
             if parallel_state.is_pipeline_last_stage(ignore_virtual=True):

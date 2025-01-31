@@ -8,11 +8,11 @@ export CUDA_VISIBLE_DEVICES=0,1
 
 
 GPUS_PER_NODE=1
-MODEL_TYPE="7b" #"13b"
+MODEL_TYPE="7b-chat" #"13b"
 # Change for multinode config
-MASTER_ADDR=compute2 #eclab3080
+MASTER_ADDR=eclab3080
 MASTER_PORT=6000
-NNODES=1
+NNODES=2
 if [ $# -ne 0 ]; then
     NNODES=$@
 fi
@@ -25,7 +25,7 @@ if [[ $HOSTNAME == *4090* ]]; then
 elif [[ $HOSTNAME == compute* ]]; then
     export NCCL_DEBUG=INFO && export NCCL_SOCKET_IFNAME=eth0 && export GLOO_SOCKET_IFNAME=eth0 
 else
-    export NCCL_DEBUG=INFO && export NCCL_SOCKET_IFNAME=enp181s0 && export GLOO_SOCKET_IFNAME=enp181s0
+    export NCCL_DEBUG=INFO && export NCCL_SOCKET_IFNAME=eno1 && export GLOO_SOCKET_IFNAME=eno1
 fi
 
 if [[ $MODEL_TYPE == 7b* ]]; then
@@ -45,14 +45,14 @@ else
 fi
 
 TPdegree=1
-PPdegree=1
+PPdegree=4
 DPdegree=$(( WORLD_SIZE / TPdegree / PPdegree ))
 VPPdegree=1
 GLOBAL_BATCH_SIZE=16
 if [[ $MODEL_TYPE == 70b* ]]; then
     CHECKPOINT_PATH_BASE=/tmp2/llama2/llama-2-${MODEL_TYPE}-me/hf
 else
-    CHECKPOINT_PATH_BASE=/tmp2/Megatron-LM/llama-2-${MODEL_TYPE}-me/hf
+    CHECKPOINT_PATH_BASE=./llama-2-${MODEL_TYPE}-me/hf
 fi
 # CHECKPOINT_PATH_BASE=/tmp2/llama2/llama-2-${MODEL_TYPE}-me/hf
 if [[ $VPPdegree == 1 ]]; then
@@ -62,12 +62,14 @@ else
 fi
 #CHECKPOINT_PATH=/tmp2/llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
 # DATA_PATH=/tmp2/Megatron-LM/wizardlm_orca_dataset/output_instruction_document
- DATA_PATH=/tmp2/Megatron-LM/wizardlm_dataset_2/output_instruction_document
-RESULTS_PATH=/tmp2/Megatron-LM/results/$HOSTNAME/$TIME
-TOKENIZER_MODEL=/tmp2/Megatron-LM/tokenizer.model
+DATA_PATH=./wizardlm_dataset_2/output_instruction_document
+RESULTS_PATH=./results/$HOSTNAME/$TIME
+TOKENIZER_MODEL=./tokenizer.model
 
 TENSORBOARD_DIR="./logs/TP_${TPdegree}_PP_${PPdegree}_DP_${DPdegree}"
 FILENAME="TP_${TPdegree}_PP_${PPdegree}_DP_${DPdegree}"
+
+PROFILE_DIR="/tmp2/yuhu/"
 
 # if [[ $HOSTNAME == "eclab3080" ]]; then
 #     NODE_RANK=0
@@ -107,7 +109,8 @@ GPT_ARGS="
     --weight-decay 1e-2 \
     --lr-warmup-fraction .01 \
     --clip-grad 1.0 \
-    --bf16 \
+    --fp16 \
+    --initial-loss-scale 2048 \
     --use-mcore-models \
     --exit-on-missing-checkpoint \
     --use-checkpoint-args \
@@ -126,27 +129,30 @@ GPT_ARGS="
 "
 
     # --num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree / $VPPdegree))
-
+    # --apply-query-key-layer-scaling \
+    # --accumulate-allreduce-grads-in-fp32 \
+    # --fp16-lm-cross-entropy
 
 
 
 LLAMA_ARGS="
     --llama-size ${MODEL_TYPE} \
-    --llama \
     --swiglu \
+    --llama \
 "
     # --finetune-mlp \
     #     \         \
-
-    # --swap-weight \
+    #     --swap-weight \
     # --offload-activation \
     # --overlap-dequantize
 
 
 
+
+
 NSYS_ARGS="
     --force-overwrite true \
-    -o /tmp2/yuhu/${HOSTNAME}_${MODEL_TYPE}_${TIME} \
+    -o ${PROFILE_DIR}${HOSTNAME}_${MODEL_TYPE}_${TIME} \
     --capture-range cudaProfilerApi \
     --capture-range-end stop-shutdown \
     --trace=nvtx,cuda,cudnn \
@@ -161,7 +167,7 @@ PROF_ARGS="
     --profile-ranks 0 1 2 3 4 5 6 7\
     --profile-step-start 15 \
     --profile-step-end 20 \
-    --profile-output /tmp2/yuhu/${HOSTNAME}_${MODEL_TYPE}_${TIME}.json
+    --profile-output ${PROFILE_DIR}${HOSTNAME}_${MODEL_TYPE}_${TIME}.json
 "
 
 DATA_ARGS="
@@ -184,85 +190,8 @@ LMS_ARGS="
     --lms-swap \
     --lms-swap-policy dynamic-early \
 "
-# if [ -d $RESULTS_PATH ]; then
-#     mkdir -p $RESULTS_PATH
-# fi
 
-# if [ -e /tmp2/yuhu.txt ]; then
-#     rm /tmp2/yuhu.txt
-# fi
-
-# if [ -e /tmp2/debug.txt ]; then
-#     rm /tmp2/debug.txt
-# fi
-
-# if [ -e /tmp2/loss.csv ]; then
-#     rm /tmp2/loss.csv
-# fi
-# echo "k, iteration, loss, ppl" > /tmp2/loss.csv
-
-# echo "nsys profile $NSYS_ARGS \
-#     torchrun $DISTRIBUTED_ARGS finetune_llama.py \
-#     $GPT_ARGS \
-#     $DATA_ARGS \
-#     $OUTPUT_ARGS \
-#     $LLAMA_ARGS \
-#     --transformer-impl transformer_engine \
-#     --save $RESULTS_PATH \
-#     --load $CHECKPOINT_PATH \
-#     $PROF_ARGS \
-# "
-
-# NUM=3
-# for (( i=0; i<${NUM}; i++ )); do
-#     # mbs=$((2 ** $i))
-#     # echo $mbs
-#     # echo "$mbs lora" >> /tmp2/yuhu.txt
-#     rate=$(echo "0.05 * $i + 0.4"|bc)
-#     # echo $rated
-
-#     # # nsys profile $NSYS_ARGS \
-#     # torchrun $DISTRIBUTED_ARGS finetune_llama.py \
-#     #     --distributed-backend nccl \
-#     #     $GPT_ARGS \
-#     #     --micro-batch-size 2 \
-#     #     $DATA_ARGS \
-#     #     $OUTPUT_ARGS \
-#     #     $LLAMA_ARGS \
-#     #     --finetune-method lora \
-#     #     --transformer-impl transformer_engine \
-#     #     --save $RESULTS_PATH \
-#     #     --load $CHECKPOINT_PATH \
-#     #     $PROF_ARGS \
-#     #     --topk-k-rate $rate \
-#         # --no-gradient-accumulation-fusion \
-#         # --swap-weight
-#         # --offload-activation
-
-#     # echo "$mbs qlora" >> /tmp2/yuhu.txt
-
-
-# #     nsys profile $NSYS_ARGS \
-# #     torchrun $DISTRIBUTED_ARGS finetune_llama.py \
-# #         --distributed-backend nccl \
-# #         $GPT_ARGS \
-# #         --micro-batch-size $mbs \
-# #         $DATA_ARGS \
-# #         $OUTPUT_ARGS \
-# #         $LLAMA_ARGS \
-# #         --finetune-method qlora \
-# #         --transformer-impl transformer_engine \
-# #         --save $RESULTS_PATH \
-# #         --load $CHECKPOINT_PATH \
-# #         $PROF_ARGS \
-# #         # --no-gradient-accumulation-fusion \
-# #         # --swap-weight
-# #         # --offload-activation
-# done
-
-
-
-# nsys profile $NSYS_ARGS \
+nsys profile $NSYS_ARGS \
 torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     --distributed-backend nccl \
     $GPT_ARGS \
@@ -270,7 +199,7 @@ torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     $DATA_ARGS \
     $OUTPUT_ARGS \
     $LLAMA_ARGS \
-    --finetune-method lora \
+    --finetune-method qlora \
     --transformer-impl transformer_engine \
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \
@@ -278,3 +207,5 @@ torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     # $LMS_ARGS
     # --skip-train
     # --topk-k-rate 0.1
+
+# finetune-method : lora, qlora, fp8-e4m3-lora, fp8-e5m2-lora, rtn-lora, sa

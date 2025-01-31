@@ -33,7 +33,6 @@ import copy
 @dataclass
 class SelfAttentionSubmodules:
     linear_qkv: Union[ModuleSpec, type] = None
-    qkv_layernorm: Union[ModuleSpec, type] = None
     core_attention: Union[ModuleSpec, type] = None
     linear_proj: Union[ModuleSpec, type] = None
     q_layernorm: Union[ModuleSpec, type] = None
@@ -306,6 +305,8 @@ class Attention(MegatronModule, ABC):
             timer.push("attention")
             
         sq, b, _ = hidden_states.size()
+        # if torch.isnan(hidden_states).any():
+        #     print(f"NAN in input of attention layer {self.layer_number}")
 
         # For self attention we just duplicate the rotary_pos_emb if it isn't already
         if rotary_pos_emb is not None and not isinstance(rotary_pos_emb, tuple):
@@ -320,6 +321,7 @@ class Attention(MegatronModule, ABC):
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
         query, key, value = self.get_query_key_value_tensors(hidden_states, key_value_states)
+
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference
         # ===================================================
@@ -407,6 +409,9 @@ class Attention(MegatronModule, ABC):
             timer.pop()
         if not self.training:
             self.casual = True
+            
+        # if torch.isnan(output).any():
+        #     print(f"NAN in output of attention layer {self.layer_number}")
         return output, bias
 
 
@@ -433,14 +438,14 @@ class SelfAttention(Attention):
             attention_type="self",
         )
         
-        if submodules.qkv_layernorm is not None:
-            self.qkv_layernorm = build_module(
-                submodules.qkv_layernorm,
-                hidden_size=self.config.hidden_size,
-                config=self.config
-            )
-        else:
-            self.qkv_layernorm = None
+        # if submodules.qkv_layernorm is not None:
+        #     self.qkv_layernorm = build_module(
+        #         submodules.qkv_layernorm,
+        #         hidden_size=self.config.hidden_size,
+        #         config=self.config
+        #     )
+        # else:
+        #     self.qkv_layernorm = None
         # if config.finetune_method == "lora":
         #         self.linear_q = build_module(
         #             submodules.linear_qkv,
@@ -592,18 +597,34 @@ class SelfAttention(Attention):
         # Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)]
         # main_stream = torch.cuda.current_stream()
         # main_stream.synchronize()
+        # if torch.isnan(hidden_states).any():
+        #     print(f"NAN in input of attention layer {self.layer_number}")
+        # if torch.isinf(hidden_states).any():
+        #     print(f"INF in input of attention layer {self.layer_number}")
         torch.cuda.nvtx.range_push(f"Layer {self.layer_number} get_query_key_value_tensors")
-        if self.qkv_layernorm is not None:
-            torch.cuda.nvtx.range_push(f"Layer {self.layer_number} qkv_layernorm")
-            norm_hidden_states = self.qkv_layernorm(hidden_states)
-            # with torch.cuda.stream(self.streams[0]):
-            #     if hasattr(self.linear_qkv.weight, "quantized_data"):
-            #         first_elements = (self.linear_qkv.weight.quantized_data >> 4).to(torch.long)
-            #         # second_elements = (self.quantized_data & 0b1111).to(torch.long)
-            # torch.cuda.synchronize()
-            torch.cuda.nvtx.range_pop()
+        # if self.qkv_layernorm is not None:
+        #     torch.cuda.nvtx.range_push(f"Layer {self.layer_number} qkv_layernorm")
+        #     norm_hidden_states = self.qkv_layernorm(hidden_states)
+        #     # with torch.cuda.stream(self.streams[0]):
+        #     #     if hasattr(self.linear_qkv.weight, "quantized_data"):
+        #     #         first_elements = (self.linear_qkv.weight.quantized_data >> 4).to(torch.long)
+        #     #         # second_elements = (self.quantized_data & 0b1111).to(torch.long)
+        #     # torch.cuda.synchronize()
+        #     torch.cuda.nvtx.range_pop()
+        # for name, param in self.qkv_layernorm.named_parameters():
+        #     if torch.isnan(param).any():
+        #         print(f"NAN in {name} of qkv_layernorm of attention layer {self.layer_number}")
+        # if torch.isnan(norm_hidden_states).any():
+        #     print(f"Input min: {hidden_states.min()}, Input max: {hidden_states.max()}")
+        #     print(f"NAN in qkv layernorm of attention layer {self.layer_number}")
+        # if torch.isinf(norm_hidden_states).any():
+        #     print(f"Input min: {hidden_states.min()}, Input max: {hidden_states.max()}")
+        #     print(f"INF in qkv layernorm of attention layer {self.layer_number}")
         torch.cuda.nvtx.range_push(f"Layer {self.layer_number} linear_qkv")
-        mixed_qkv, _ = self.linear_qkv(norm_hidden_states)
+        # if self.qkv_layernorm is not None:
+        #     mixed_qkv, _ = self.linear_qkv(norm_hidden_states)
+        # else:
+        mixed_qkv, _ = self.linear_qkv(hidden_states)
         # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
@@ -655,6 +676,9 @@ class SelfAttention(Attention):
             self.run_realtime_tests()
         # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
+        
+        # if torch.isnan(query).any() or torch.isnan(key).any() or torch.isnan(value).any():
+        #     print(f"NAN in qkv of attention layer {self.layer_number}")
 
         return query, key, value
 

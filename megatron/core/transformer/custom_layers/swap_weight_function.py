@@ -41,12 +41,9 @@ from transformer_engine.pytorch.cpp_extensions import (
     cast_to_fp8,
 )
 from transformer_engine.pytorch.constants import dist_group_type
-from megatron.training import get_args
 from transformer_engine.pytorch.module.linear import Linear
-from swap_manager import get_weight_swapper
-from large_model_gpu import get_pack_hook
-from tensor_manager import chk_tensor_registered
-from tensor_manager import register_activation
+
+from tensor_manager import chk_tensor_registered, chk_tensor_type_is_saliency, record_warmup
 
 
 class _Linear(torch.autograd.Function):
@@ -85,7 +82,16 @@ class _Linear(torch.autograd.Function):
             freeze_weight = True
         else:
             freeze_weight = False
-
+        
+        # is_saliency = chk_tensor_type_is_saliency(weight)
+        # if is_saliency:
+        #     weight_sal = weight
+        #     weight = weight.decompress()
+        # if is_saliency:
+        #     out2 = weight.gemm_topk_part(inp)
+        #     weight = weight.tensor
+            # torch.cuda.current_stream().synchronize()
+            
 
         
         # Make sure input dimensions are compatible
@@ -105,6 +111,10 @@ class _Linear(torch.autograd.Function):
         # Cast for native AMP
         inputmat = cast_if_needed(inputmat, activation_dtype)
         inputmat_no_fp8 = inputmat
+        # if is_saliency:
+        #     weight_sal.warmup(inputmat)
+        if is_grad_enabled:
+            record_warmup(weight_for_save, inputmat, False)
 
         if fp8:
             fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
@@ -276,6 +286,7 @@ class _Linear(torch.autograd.Function):
             ctx.tp_size = tp_size
             ctx.requires_dgrad = inp.requires_grad
 
+        # out = out + out2 if is_saliency else out
         # Row Parallel Linear
         if ub_split_rs:
             out = rs_out
@@ -284,7 +295,7 @@ class _Linear(torch.autograd.Function):
         elif parallel_mode == "row" and tensor_parallel:
             out, _ = allreduce(out, tp_group)
         # [*, in_features] -> [*, out_features] except first dimension changes for SP
-        return out.view(-1, *inp.shape[1:-1], out.shape[-1])
+        return out.view(-1, *inp.shape[1:-1], out.shape[-1]) 
 
 
     @staticmethod
@@ -312,8 +323,20 @@ class _Linear(torch.autograd.Function):
             # ) = ctx.activations.get_computable_form()
             
             if chk_tensor_registered(weight):
+                weight_for_save = weight
                 weight = weight.get_computable_form()
+                # from tensor_manager.rtn_4bit import RTN4Bit
+                # weight = RTN4Bit(weight).decompress()
+                
+            # if torch.isnan(grad_output).any():
+            #     print("grad_output has nan")
+            #     print(grad_output.size())
                 # torch.cuda.current_stream().synchronize()
+            # is_saliency = chk_tensor_type_is_saliency(weight)
+            # if is_saliency:
+            #     # weight.warmup(grad_output)
+            #     weight = weight.decompress()
+            
             if ctx.fuse_wgrad_accumulation and weight.requires_grad:
                 weight.main_grad = main_grad
             
@@ -337,6 +360,7 @@ class _Linear(torch.autograd.Function):
                 ctx, grad_output, ctx.parallel_mode == "row"
             )
             handle = None
+            record_warmup(weight_for_save, grad_output, True)
             # Column Parallel Linear
             # Overlap input AG with dgrad
             if ctx.parallel_mode == "column" and ctx.sequence_parallel:

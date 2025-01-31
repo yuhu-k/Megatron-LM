@@ -25,7 +25,6 @@ from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 @dataclass
 class MLPSubmodules:
-    pre_norm: Union[ModuleSpec, type] = None
     linear_fc1: Union[ModuleSpec, type] = None
     linear_fc2: Union[ModuleSpec, type] = None
 
@@ -65,14 +64,14 @@ class MLP(MegatronModule):
         if self.config.gated_linear_unit:
             ffn_hidden_size *= 2
             
-        if submodules.pre_norm != None:
-            self.pre_norm = build_module(
-                submodules.pre_norm,
-                hidden_size=self.config.hidden_size,
-                config=self.config
-            )
-        else:
-            self.pre_norm = None
+        # if submodules.pre_norm != None:
+        #     self.pre_norm = build_module(
+        #         submodules.pre_norm,
+        #         hidden_size=self.config.hidden_size,
+        #         config=self.config
+        #     )
+        # else:
+        #     self.pre_norm = None
         if config.finetune_method != None and "lora" in config.finetune_method:
 
             if config.gated_linear_unit:
@@ -190,12 +189,19 @@ class MLP(MegatronModule):
             timer.push("mlp")
         # main_stream = torch.cuda.current_stream()
         # [s, b, 4 * h/p]
-        if self.pre_norm is not None:
-            # main_stream.synchronize()
-            torch.cuda.nvtx.range_push("pre_norm")
-            hidden_states = self.pre_norm(hidden_states)
-            # main_stream.synchronize()
-            torch.cuda.nvtx.range_pop()
+        # print(f"mlp prenorm input min: {hidden_states.min()}, input max: {hidden_states.max()}")
+        # if self.pre_norm is not None:
+        #     # main_stream.synchronize()
+        #     torch.cuda.nvtx.range_push("pre_norm")
+        #     hidden_states = self.pre_norm(hidden_states)
+        #     # main_stream.synchronize()
+        #     torch.cuda.nvtx.range_pop()
+            
+        # if torch.isnan(hidden_states).any():
+        #     print(f"input has nan in mlp layer prenorm")
+        # if torch.isinf(hidden_states).any():
+        #     print(f"input has inf in mlp layer prenorm")
+        # print(f"fc1 input min: {hidden_states.min()}, fc1 max: {hidden_states.max()}")
 
         torch.cuda.nvtx.range_push("linear_fc1")
         if self.config.finetune_method != None and "lora" in self.config.finetune_method and self.config.gated_linear_unit:
@@ -207,6 +213,14 @@ class MLP(MegatronModule):
             intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
         # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
+        
+        # print(f"silu input min: {intermediate_parallel.min()}, input max: {intermediate_parallel.max()}")
+        
+        # if torch.isnan(intermediate_parallel).any():
+        #     print(f"output has nan in mlp layer fc1")
+        # if torch.isinf(intermediate_parallel).any():
+        #     print(f"output has inf in mlp layer fc1")
+            
 
         torch.cuda.nvtx.range_push("activation")
         if self.config.bias_activation_fusion:
@@ -236,6 +250,11 @@ class MLP(MegatronModule):
                 intermediate_parallel = glu(intermediate_parallel)
             else:
                 intermediate_parallel = self.activation_func(intermediate_parallel)
+        # print(f"silu output min: {intermediate_parallel.min()}, output max: {intermediate_parallel.max()}")
+        # if torch.isnan(intermediate_parallel).any():
+        #     print(f"output has nan in mlp layer activation function")
+        # if torch.isinf(intermediate_parallel).any():
+        #     print(f"output has inf in mlp layer activation function")
         # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
 
@@ -249,6 +268,12 @@ class MLP(MegatronModule):
             # main_stream.synchronize()
             torch.cuda.nvtx.range_pop()
             timer.pop()
+
+        # if torch.isnan(output).any():
+        #     print(f"output has nan in mlp layer fc2")
+        # if torch.isinf(output).any():
+        #     print(f"output has inf in mlp layer fc2")
+        
         return output, output_bias
 
     def sharded_state_dict(

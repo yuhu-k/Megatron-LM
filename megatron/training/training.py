@@ -262,7 +262,8 @@ def pretrain(train_valid_test_dataset_provider,
         lms.init(device, args, enable_multi_gpu=True, ipc_object=ipc_object, skip_sync_iterations=-1)
     lms.init_pack_hook(args.profile, args.lms, args.lms_swap_nonblocking)
     redirect_print()
-    init_tensor_manager(args.virtual_pipeline_model_parallel_size if args.virtual_pipeline_model_parallel_size is not None else 1, args.global_batch_size//args.micro_batch_size, args.offload_activation)
+    # quantize_weight_method = "qlora" if "q" in args.finetune_method else "rtn4bit" if "rtn" in args.finetune_method else None
+    init_tensor_manager(args.virtual_pipeline_model_parallel_size if args.virtual_pipeline_model_parallel_size is not None else 1, args.global_batch_size//args.micro_batch_size, args.offload_activation, args.swap_weight, args.finetune_method)
     if torch.distributed.get_rank() == 0:
         init_recorder()
     
@@ -607,7 +608,7 @@ def setup_model_and_optimizer(model_provider_func,
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
     config.timers = timers
-    if "lora" in args.finetune_method:
+    if args.finetune_method is not None and "lora" in args.finetune_method:
         for mod in model:
             for name, param in mod.named_parameters():
                 if "lora" in name:
@@ -692,6 +693,7 @@ def train_step(forward_step_func, data_iterator,
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False)
+    # print(losses_reduced)
 
 
     # Empty unused memory.
@@ -994,8 +996,8 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
         # print_rank_0(log_string)
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
             print(loss_dict)
-            with open("/tmp2/yuhu/loss.csv","a") as f:
-                f.write(f"{iteration}, {avg}\n")
+            # with open("/tmp2/yuhu/loss.csv","a") as f:
+            #     f.write(f"{iteration}, {avg}\n")
         if report_memory_flag and learning_rate > 0.:
             # Report memory after optimizer state has been initialized.
             if torch.distributed.get_rank() == 0:
@@ -1220,6 +1222,8 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         num_microbatches = get_num_microbatches()
         update_num_microbatches(args.consumed_train_samples, consistency_check=True)
 
+        from tensor_manager import set_curr_iter
+        set_curr_iter(iteration)
         args.curr_iteration = iteration
         loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
             train_step(forward_step_func,
@@ -1377,6 +1381,8 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             print(s1)
             print(s2)
             print(s3)
+            from tensor_manager import finish_warmup
+            finish_warmup()
             # from megatron.core.transformer.transformer_block import arraypp
             # import numpy as np
             # if isinstance(arraypp, np.ndarray):
@@ -1393,9 +1399,8 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         if args.manual_gc:
             if args.manual_gc_interval != 0 and iteration % args.manual_gc_interval == 0:
                 gc.collect()
-        
-        if args.finetune_method == "qlora":
-            finish_warmup()
+    from tensor_manager import finish_warmup
+    finish_warmup()
         
     if torch.distributed.get_rank() == 0:
         progress_bar.close()

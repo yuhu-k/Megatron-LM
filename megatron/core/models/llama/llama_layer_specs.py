@@ -34,24 +34,23 @@ def get_llama_layer_with_transformer_engine_spec(
     return ModuleSpec(
         module=TransformerLayer,
         submodules=TransformerLayerSubmodules(
+            input_layernorm=TENorm,
             self_attention=ModuleSpec(
                 module=SelfAttention,
                 params={"attn_mask_type": AttnMaskType.causal},
                 submodules=SelfAttentionSubmodules(
-                    qkv_layernorm=TENorm,
                     linear_qkv=LoRAColumnParallelLinear,
                     core_attention=TEDotProductAttention,
                     linear_proj=LoRARowParallelLinear,
                 ) if lora 
                 else SelfAttentionSubmodules(
-                    qkv_layernorm=TENorm,
                     linear_qkv=TEColumnParallelLinear,
                     core_attention=TEDotProductAttention,
                     linear_proj=TERowParallelLinear,
                 ),
             ),
             self_attn_bda=get_bias_dropout_add,
-            pre_mlp_layernorm=TENorm if num_experts else IdentityOp,
+            pre_mlp_layernorm=TENorm,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
         ),
@@ -67,8 +66,7 @@ def _get_mlp_module_spec(
             module=MLP,
             submodules=MLPSubmodules(
                 linear_fc1=LoRAColumnParallelLinear if finetune else TEColumnParallelLinear if use_te else ColumnParallelLinear,
-                linear_fc2=LoRARowParallelLinear if finetune else TERowParallelLinear if use_te else RowParallelLinear,
-                pre_norm=TENorm if use_te else IdentityOp,
+                linear_fc2=LoRARowParallelLinear if finetune else TERowParallelLinear if use_te else RowParallelLinear
             ),
         )
     else:

@@ -254,8 +254,18 @@ class LLaMAModel(LanguageModule):
         if labels is None:
             # [s b h] => [b s h]
             return logits.transpose(0, 1).contiguous()
-
+        
+        if torch.isnan(labels).any() or torch.isinf(labels).any():
+            print("NAN or INF in labels")
         loss = self.compute_language_model_loss(labels, logits)
+        # print("Loss: ", loss)
+        if torch.isnan(loss).any():
+            print("NAN in losses")
+        if torch.isinf(loss).any():
+            print("INF in losses")
+        # print(f"Model output range: {loss.min().item()} to {loss.max().item()}")
+        # print(f"Model logit range: {logits.min().item()} to {logits.max().item()}")
+
         
 
         return loss

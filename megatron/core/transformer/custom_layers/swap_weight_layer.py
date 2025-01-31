@@ -132,10 +132,12 @@ class SwapWeightLinear(SwapTELinear):
         self.swap_weight = swap_weight and config.swap_weight
         self.quantize = quantize
         self.config = config
+        self.weight_size = self.weight.size()
+        self.device = torch.cuda.current_device() if not self.swap_weight else "cpu"
+
         
         
         if self.quantize or self.swap_weight:
-            weight_size = (output_size, input_size)
             self.__delete_all_weight()
             params_dtype = self.params_dtype
             if self.swap_weight:
@@ -143,23 +145,20 @@ class SwapWeightLinear(SwapTELinear):
             else:
                 device = torch.cuda.current_device()
 
-            self._create_weight_and_bias(weight_size, device, False, params_dtype)
+            self._create_weight_and_bias(self.weight_size, device, False, params_dtype, True)
             self.profile = config.profile
+        
                 
             
-    def _create_weight_and_bias(self, weight_size, device, require_grad, params_dtype):
+    def _create_weight_and_bias(self, weight_size, device, require_grad, params_dtype, delete_data=False):
         """
         Creates a linear weight and bias tensor, using NF4 dtype if we're quantizing
         (indicated via quantize_base=True).
         """
-        tmp = torch.empty(weight_size, device=device if not self.quantize else torch.cuda.current_device(), requires_grad=require_grad, dtype=params_dtype)
-        weight = tmp if not self.quantize else to_nf4(tmp)
-        if self.quantize and self.swap_weight:
-            weight.quantized_data = weight.quantized_data.cpu()
-            weight.quantized_scalers = weight.quantized_scalers.cpu()
-            weight.quantization_factor = weight.quantization_factor.cpu()
-            weight.nf4 = weight.nf4.cpu()
-            weight = weight.cpu()
+        weight = torch.empty(weight_size, device=device, requires_grad=require_grad, dtype=params_dtype)
+        if delete_data:
+            weight.data = torch.empty((1,), device=weight.device, dtype=weight.dtype,)
+
         self.register_parameter("weight", torch.nn.Parameter(weight))
 
     def __delete_all_weight(self):
@@ -173,12 +172,19 @@ class SwapWeightLinear(SwapTELinear):
     
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs):
+        self.weight.data = torch.empty(self.weight_size, device=self.weight.device, dtype=self.weight.dtype)
         result = super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs)
 
         if self.quantize or self.swap_weight:
             self.weight.requires_grad = False
-            register_tensor(self.weight)
+        register_tensor(self.weight)
+        tensor_id = self.weight.tensor_id
+        get_computable_form = self.weight.get_computable_form
+        self.__delete_all_weight()
+        self._create_weight_and_bias(self.weight_size, self.device, False, self.params_dtype, True)
+        self.weight.tensor_id = tensor_id
+        self.weight.get_computable_form = get_computable_form
         return result
 
             

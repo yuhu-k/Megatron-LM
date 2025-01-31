@@ -293,6 +293,11 @@ class TransformerBlock(MegatronModule):
                         packed_seq_params,
                     )
                     
+                # if torch.isnan(hidden_states).any():
+                #     print(f"NaN detected in layer: {l}")
+                # if torch.isinf(hidden_states).any():
+                #     print(f"Inf detected in layer: {l}")
+                    
                 
                 # if self.k != None and l in [7,15,23] and isinstance(hidden_states, torch.Tensor):
                 #     hidden_states = self.activation_compression(hidden_states)

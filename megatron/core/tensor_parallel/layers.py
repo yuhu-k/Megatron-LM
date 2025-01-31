@@ -285,20 +285,19 @@ class LinearWithFrozenWeight(torch.autograd.Function):
     def forward(
         ctx, input, weight, bias, allreduce_dgrad, weight_id=None
     ):
-        ctx.store_weight = True
-        if weight_id != None:
-            swapper = get_weight_swapper()
-            weight = swapper.get_weight(weight_id)
-            ctx.w_id = weight_id
-            ctx.store_weight = False
+        # ctx.store_weight = True
+        # if weight_id != None:
+        #     swapper = get_weight_swapper()
+        #     weight = swapper.get_weight(weight_id)
+        #     ctx.w_id = weight_id
+        #     ctx.store_weight = False
         ctx.allreduce_dgrad = allreduce_dgrad
         output = torch.matmul(input, weight.t())
         if bias is not None:
             output = output + bias
         # hook = get_pack_hook()
         # ctx.save_for_backward(*hook.my_pack_hook(weight))
-        if ctx.store_weight:
-            ctx.save_for_backward(weight)
+        ctx.save_for_backward(weight)
         return output
 
     @staticmethod
@@ -306,19 +305,24 @@ class LinearWithFrozenWeight(torch.autograd.Function):
     def backward(ctx, grad_output):
         # hook = get_pack_hook()
         # (weight,) = hook.my_unpack_hook(*ctx.saved_tensors)
-        if ctx.store_weight:
-            (weight,) = ctx.saved_tensors
-        else:
-            swapper = get_weight_swapper()
-            weight = swapper.get_weight(ctx.w_id)
+        # if ctx.store_weight:
+        (weight,) = ctx.saved_tensors
+        # else:
+        #     swapper = get_weight_swapper()
+        #     weight = swapper.get_weight(ctx.w_id)
+        # if torch.isnan(grad_output).any():
+        #     print("grad_output contains NaN")
+        # if torch.isinf(grad_output).any():
+        #     print("grad_output contains Inf")
+        #     print(grad_output)
             
-        weight = weight.to(torch.cuda.current_device())
+        # weight = weight.to(torch.cuda.current_device())
         # grad_output = grad_output.to(dtype=torch.float32)
         # weight = weight.to(dtype=torch.float32)
         grad_input = grad_output.matmul(weight)
         
-        if not ctx.store_weight:
-            swapper.offload_weight(ctx.w_id)
+        # if not ctx.store_weight:
+        #     swapper.offload_weight(ctx.w_id)
         
 
         if ctx.allreduce_dgrad:
@@ -438,15 +442,17 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         output = torch.matmul(total_input, weight.t())
         if bias is not None:
             output = output + bias
-        hook = get_pack_hook()
-        ctx.save_for_backward(*hook.my_pack_hook(input, weight))
+        # hook = get_pack_hook()
+        # ctx.save_for_backward(*hook.my_pack_hook(input, weight))
+        ctx.save_for_backward(input, weight)
         return output
 
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_output):
-        hook = get_pack_hook()
-        input, weight = hook.my_unpack_hook(*ctx.saved_tensors)
+        # hook = get_pack_hook()
+        # input, weight = hook.my_unpack_hook(*ctx.saved_tensors)
+        input, weight = ctx.saved_tensors
         use_bias = ctx.use_bias
         grad_output_buffer = ctx.grad_output_buffer
 

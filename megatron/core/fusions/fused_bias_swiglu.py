@@ -13,6 +13,7 @@ from large_model_gpu import get_pack_hook
 @jit_fuser
 def swiglu(y):
     y_1, y_2 = torch.chunk(y, 2, -1)
+    y_1 = torch.clamp(y_1, min=-10.0, max=10.0)
     return F.silu(y_1) * y_2
 
 

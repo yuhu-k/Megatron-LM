@@ -2,11 +2,17 @@ from torch import Tensor
 import threading
 import torch
 # from torchao.dtypes.nf4tensor import NF4Tensor
-from .nf4tensor import NF4Tensor
+from .nf4tensor import NF4Tensor, nf4_to_computable_tensor, to_nf4
 import json
 import numpy as np
 from typing import Optional
 from functools import partial
+from .rtn4bit_interface import to_rtn_4bit
+from .saliencytensor_interface import to_saliency_channel_tensor, SaliencyChannelTensor
+from .base_tensor_interface import TensorInterfaceBase
+from .nf4tensor_interface import to_nf4_interface
+from .general_tensor_interface import to_general_interface
+
 
 class TensorsBucket:
     def __init__(self):
@@ -18,23 +24,19 @@ class TensorsBucket:
         self.stream = torch.cuda.Stream(device=torch.cuda.current_device())
         
         self.events = []
-        
             
-    def register(self, tensor:Tensor):
+    def register(self, tensor:TensorInterfaceBase):
         tensor_id = None
         for i in range(self.non_used_tensor_id.__len__()):
             if self.tensor_list[self.non_used_tensor_id[i]] != None and self.tensor_metadata[self.non_used_tensor_id[i]]["size"] == tensor.size():
                 tensor_id = self.non_used_tensor_id.pop(i)
                 self.tensor_metadata[tensor_id]["status"] = True
                 break
-                # self.tensor_list[tensor_id].copy_(tensor, non_blocking=True)
-                # self.tensor_metadata[tensor_id]["status"] = True
         if tensor_id == None:
             tensor_id = self.tensor_count
             self.tensor_count += 1
             self.tensor_list.append([None, None])
             self.tensor_metadata.append({"size": tensor.size(), "status": True, "synchronous": None, "numel": tensor.numel()})
-        #self.tensor_list.append(tensor.pin_memory() if tensor.device.type == "cpu" else tensor.to("cpu", non_blocking=True))
         if tensor.device.type == "cpu":
             self.tensor_list[tensor_id][0] = tensor.pin_memory()
             self.tensor_metadata[tensor_id]["synchronous"] = "C" # C means the tensor is in CPU
@@ -43,14 +45,14 @@ class TensorsBucket:
             self.tensor_metadata[tensor_id]["synchronous"] = "G"
         return tensor_id
     
-    def get_gpu_tensor(self, tensor_id, non_blocking=True) -> Optional[torch.Tensor]:
+    def get_gpu_tensor(self, tensor_id, non_blocking=True) -> Optional[TensorInterfaceBase]:
         if self.tensor_metadata[tensor_id]["status"]:
             self.move_tensor(tensor_id, torch.cuda.current_device(), non_blocking)
             return self.tensor_list[tensor_id][1]
         else:
             return None
     
-    def get_cpu_tensor(self, tensor_id, non_blocking=True) -> Optional[torch.Tensor]:
+    def get_cpu_tensor(self, tensor_id, non_blocking=True) -> Optional[TensorInterfaceBase]:
         if self.tensor_metadata[tensor_id]["status"]:
             self.move_tensor(tensor_id, "cpu", non_blocking)
             return self.tensor_list[tensor_id][0]
@@ -86,6 +88,7 @@ class TensorsBucket:
 
     def delete(self, tensor_id):
         self.tensor_list[tensor_id][1] = None
+        # self.tensor_list[tensor_id][2] = None
         self.non_used_tensor_id.append(tensor_id)
         self.tensor_metadata[tensor_id]["status"] = False
         
@@ -95,6 +98,27 @@ class TensorsBucket:
                 self.move_tensor(tensor_id, "cpu", non_blocking)
                 self.tensor_list[tensor_id][1] = None
                 self.tensor_metadata[tensor_id]["synchronous"] = "C"
+            
+            # self.tensor_list[tensor_id][2] = None
+                
+    def get_computable_form_in_gpu(self, tensor_id, non_blocking=True):
+        if self.tensor_metadata[tensor_id]["status"]:
+            # if self.tensor_list[tensor_id][2] == None:
+            #     tensor = self.get_gpu_tensor(tensor_id, non_blocking)
+            #     if tensor != None:
+            #         if self.tensor_metadata[tensor_id]["decompress_func"] != None:
+            #             tensor = self.tensor_metadata[tensor_id]["decompress_func"](tensor)
+            #         self.tensor_list[tensor_id][2] = tensor
+            #     else:
+            #         RuntimeError(f"Error, missing tensor id {tensor_id}")
+            tensor = self.get_gpu_tensor(tensor_id, non_blocking)
+            if tensor != None:
+                tensor = tensor.get_computable_form()
+            else:
+                RuntimeError(f"Error, missing tensor id {tensor_id}")
+            return tensor
+        else:
+            return None
     
     def get_tensor_size(self, tensor_id):
         return self.tensor_metadata[tensor_id]["size"]
@@ -118,20 +142,21 @@ class TensorsBucket:
         
         return time
 
+    def warmup(self, tensor_id, input):
+        if type(self.tensor_list[tensor_id][1]) == SaliencyChannelTensor or type(self.tensor_list[tensor_id][0]) == SaliencyChannelTensor:
+            if self.tensor_metadata[tensor_id]["synchronous"] == "G" or self.tensor_metadata[tensor_id]["synchronous"] == "ALL":
+                self.tensor_list[tensor_id][1].warmup(input)
+            else:
+                self.tensor_list[tensor_id][0].warmup(input)
+
 class TensorManager:
             
-    def __init__(self, stage_num, batch_num, activation_swapping) -> None:
+    def __init__(self, stage_num, batch_num, activation_swapping, weight_swapping, quantize_weight_method) -> None:
         self.tensor_bucket = TensorsBucket()
-        # self.tensor_list:list[list[Optional[int],torch.Tensor]] = []
-        # self.tensor_id_count = 0
-        
-        # self.use_order = [[]]
-        # self.use_order_pointer = 0
+
         self.max_tensor_num_in_gpu = 1
         self.num_tensor_in_gpu = 0
-        # self.load_order = []
-        # self.load_pointer = 0
-        # self.weight_use_time = []
+
         self.metadata = {}
         self.tensor_use_threshold = batch_num
         self.swap_threshold = 1024 * 1024
@@ -142,6 +167,7 @@ class TensorManager:
         self.batch_num = batch_num
         self.pause_flag = True    # To avoid prefetching when loading the weights, pause tensor manager and activate after loading the all weights
         self.activation_swapping = activation_swapping
+        self.weight_swapping = weight_swapping
 
         self.stream = torch.cuda.Stream(device=torch.cuda.current_device())
         self.stage_id = 0
@@ -151,6 +177,12 @@ class TensorManager:
         self.id_to_stage = {}
         self.stage_id_to_numels = {}
         
+        self.quantize_weight_method = quantize_weight_method
+        
+        self.warmup_iterations = 10
+        self.tensor_outlier_info = {}
+        self.tmp_data = {}
+        
         # # 開啟並讀取 JSON 檔案
         # with open('/tmp2/Megatron-LM/results-5.json', 'r', encoding='utf-8') as file:
         #     data = json.load(file)  # 將 JSON 內容轉換為 Python 字典
@@ -159,8 +191,52 @@ class TensorManager:
         #     self.swap_setting[data[i]["layer_idx"]//2, data[i]["batch_idx"], data[i]["stage"]] = {"prefetch_ration":data[i]["layer_prefetch_ratio"], "activation_offload":data[i]["activation_offload_result"]}
             
         # self.swap_list = np.full((40, 32, 2), 0)
+        self.curr_iter = 0
+        # open(f"/tmp2/yuhu/activation_outliers/num_of_available_input_{torch.cuda.current_device()}.txt", "w").close()
+        
+        
+    def set_iter(self, iter):
+        self.curr_iter = iter
 
-        # self.thread = None
+    def record_warmup(self, w_id, input:torch.Tensor, is_grad):
+        if not is_grad:
+            self.tensor_bucket.warmup(w_id, input)
+        return
+        idx_list = [0, 10] if torch.cuda.current_device() == 0 else [6, 15]
+        if (not (w_id//5 in idx_list)) or self.curr_iter % 20 != 1 :
+            return
+        if self.tmp_data.get(w_id) == None:
+            self.tmp_data[w_id] = {"activation":{"total": 0, "usable":0}, "grad":{"total": 0, "usable":0}}
+        from .sali_chan_tensor import find_outlier_channels
+        if is_grad:
+            input_type = "grad"
+        else:
+            input_type = "activation"
+        # print(input_type)
+        self.tmp_data[w_id][input_type]["total"] += 1
+        if not (torch.isnan(input).any() or torch.isinf(input).any()):
+            self.tmp_data[w_id][input_type]["usable"] += 1
+            # out = find_outlier_channels(input).to("cpu").numpy().reshape(1, -1)
+            out = np.expand_dims(input.to("cpu").numpy(), axis=0)
+            if self.tensor_outlier_info.get(w_id) is None:
+                self.tensor_outlier_info[w_id] = {input_type:out}
+            elif self.tensor_outlier_info[w_id].get(input_type) is None:
+                self.tensor_outlier_info[w_id][input_type] = out
+            else:
+                # print(self.tensor_outlier_info[w_id][input_type].shape, out.shape)
+                self.tensor_outlier_info[w_id][input_type] = np.concatenate((self.tensor_outlier_info[w_id][input_type], out), axis=0)
+        
+        if self.tmp_data[w_id][input_type]["total"] == 8:
+            if self.tmp_data[w_id][input_type]["usable"] != 0:
+                # print(self.tensor_outlier_info[w_id][input_type].shape)
+                np.savez(f"/tmp2/yuhu/activation_outliers/arrays_{torch.cuda.current_device()}_{w_id}_{input_type}_{self.curr_iter}.npz", self.tensor_outlier_info[w_id][input_type])  # 用星號 * 將 list 中的元素展開
+                self.tensor_outlier_info[w_id][input_type] = None
+            
+            # print(f"{w_id} {self.curr_iter} {input_type} {self.tmp_data[w_id][input_type]['usable']}")
+            with open(f"/tmp2/yuhu/activation_outliers/num_of_available_input_{torch.cuda.current_device()}.txt", "a") as f:
+                f.write(f"{w_id} {self.curr_iter} {input_type} {self.tmp_data[w_id][input_type]['usable']}\n")
+            self.tmp_data[w_id][input_type] = {"total": 0, "usable":0}
+        
     
     def get_weight_count_in_gpu(self):
         counts = []
@@ -223,6 +299,26 @@ class TensorManager:
         return self.tensor_bucket.chk_tid_in_use(tensor_id)
         
     def register(self, t:Tensor, tensor_type = "weight") -> int:
+        # print(self.quantize_weight_method == "rtn4bit", tensor_type == "weight")
+        dtype = t.dtype
+        if self.quantize_weight_method == "rtn-lora" and tensor_type == "weight":
+            # t = decompress_4bit_to_bf16(t)
+            t = to_rtn_4bit(t)
+        if self.quantize_weight_method == "qlora" and tensor_type == "weight":
+            t = to_nf4_interface(t)
+            # t = nf4_to_computable_tensor(t, dtype=dtype)
+        if self.quantize_weight_method == "fp8-e4m3-lora" and tensor_type == "weight":
+            t = t.to(torch.float8_e4m3fn)
+            t = t.to(dtype)
+        if self.quantize_weight_method == "fp8-e5m2-lora" and tensor_type == "weight":
+            t = t.to(torch.float8_e5m2)
+            t = t.to(dtype)
+        if self.quantize_weight_method == "saliency-lora" and tensor_type == "weight":
+            t = to_saliency_channel_tensor(t)
+        
+        if tensor_type == "activation" or type(t) == torch.Tensor:
+            t = to_general_interface(t)
+            
         tid = self.tensor_bucket.register(t)
         self.metadata[tid] = {'type': tensor_type, "event": None, "use_time": 0}
         if tensor_type == "weight":
@@ -232,9 +328,11 @@ class TensorManager:
             self.stage_batch_to_activation[(self.stage_id, self.batch_id)].append(tid)
             self.id_to_stage[tid] = (self.stage_id, self.batch_id)
         
-        if self.tensor_bucket.get_tensor_numel(tid) <= self.swap_threshold and ((tensor_type == "activation" and self.activation_swapping) or tensor_type == "weight"):
+        if self.tensor_bucket.get_tensor_numel(tid) >= self.swap_threshold and (tensor_type == "activation" and self.activation_swapping):
             with torch.enable_grad():
                 self.tensor_bucket.offload_tensor(tid)
+        if self.tensor_bucket.get_tensor_numel(tid) >= self.swap_threshold and (tensor_type == "weight" and self.weight_swapping):
+            self.tensor_bucket.offload_tensor(tid)
         # print(f"Register tensor {tid}")
         return tid
     
@@ -243,7 +341,7 @@ class TensorManager:
             for batch_id in batch_ids:
                 if self.stage_batch_to_activation.get((stage_id, batch_id)) != None:
                     for tensor_id in self.stage_batch_to_activation[(stage_id, batch_id)]:
-                        self.tensor_bucket.get_gpu_tensor(tensor_id, True)
+                        self.tensor_bucket.get_computable_form_in_gpu(tensor_id, True)
     
     def prefetch_weight(self, stage_ids, percent = 1):
         total_numels = 0
@@ -262,14 +360,14 @@ class TensorManager:
                     if current_numels > target_numels:
                         break
                     # self.get_computable_form(tensor_id, True)
-                    self.tensor_bucket.get_gpu_tensor(tensor_id, True)
+                    self.tensor_bucket.get_computable_form_in_gpu(tensor_id, True)
                     
     def fetch_rest_weight(self, stage_ids):
         for stage_id in stage_ids:
             if self.stage_to_weight.get(stage_id) != None:
                 for tensor_id in self.stage_to_weight[stage_id]:
                     # self.get_computable_form(tensor_id, False)
-                    self.tensor_bucket.get_gpu_tensor(tensor_id, True)
+                    self.tensor_bucket.get_computable_form_in_gpu(tensor_id, True)
                 
         
     def get_tensor(self, tensor_id):
@@ -278,14 +376,17 @@ class TensorManager:
         #     self.fetch_rest_weight([self.stage_id])
         #     self.prefetch_activation([self.stage_id], [self.batch_id])
 
-        output = self.tensor_bucket.get_gpu_tensor(tensor_id, False)
+        output = self.tensor_bucket.get_computable_form_in_gpu(tensor_id, False)
         self.metadata[tensor_id]['use_time'] += 1
-
+        
         if self.metadata[tensor_id]['type'] == "weight":
-            output = output.detach().requires_grad_(False)
-        if (self.operation == "forward" and self.metadata[tensor_id]['type'] == "weight" and self.metadata[tensor_id]["use_time"] == self.tensor_use_threshold and self.id_to_stage[tensor_id][0] != self.stage_num-1) or \
+            if type(output) != SaliencyChannelTensor:
+                output = output.detach().requires_grad_(False)
+
+        if (self.metadata[tensor_id]['type'] == "weight" and self.weight_swapping) and \
+            ((self.operation == "forward" and self.metadata[tensor_id]['type'] == "weight" and self.metadata[tensor_id]["use_time"] == self.tensor_use_threshold and self.id_to_stage[tensor_id][0] != self.stage_num-1) or \
             (self.operation == "backward" and self.metadata[tensor_id]['type'] == "weight" and self.metadata[tensor_id]["use_time"] == 2*self.tensor_use_threshold and self.id_to_stage[tensor_id][0] != 0 and self.id_to_stage[tensor_id][0] != self.stage_num-1) or \
-            (self.metadata[tensor_id]["use_time"] >= 3*self.tensor_use_threshold):
+            (self.metadata[tensor_id]["use_time"] >= 3*self.tensor_use_threshold)):
             self.tensor_bucket.offload_tensor(tensor_id)
             self.metadata[tensor_id]["use_time"] = 0
             # print(f"1 Offload stage {self.id_to_stage[tensor_id][0]}")
@@ -330,6 +431,11 @@ class TensorManager:
         # self.use_order_pointer = 0
         # self.load_pointer = 0
         self.resume()
+        
+        
+    
+    def get_quantize_method(self):
+        return self.quantize_weight_method
                 
     # def make_use_order(self):
     #     self.use_order = self.use_order[0] + self.use_order[0]

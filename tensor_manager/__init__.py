@@ -4,6 +4,7 @@ from typing import Union
 from functools import partial
 from .tensor_manager import TensorManager
 from torch.nn.parameter import Parameter
+from .saliencytensor_interface import SaliencyChannelTensor
 
 __TENSOR_MANAGER = None
 
@@ -55,14 +56,23 @@ class PackTensorList:
 def register_tensor(tensor:Union[Tensor, NF4Tensor]):
     if __TENSOR_MANAGER == None:
         assert "Error, Tensor_Manager is not yet initialized."
-    tensor.tensor_id = __TENSOR_MANAGER.register(tensor)
+    tensor.tensor_id = __TENSOR_MANAGER.register(tensor.clone().detach())
     tensor.get_computable_form = partial(__TENSOR_MANAGER.get_tensor, tensor_id=tensor.tensor_id)
     tensor.offload = partial(__TENSOR_MANAGER.offload_tensor, tensor_id=tensor.tensor_id)
-
+    
+def chk_tensor_type_is_saliency(tensor:Union[Tensor, SaliencyChannelTensor]):
+    return type(tensor) == SaliencyChannelTensor or (__TENSOR_MANAGER.get_quantize_method() == "saliency-lora" and hasattr(tensor, "tensor_id") and __TENSOR_MANAGER.chk_id_availibility(tensor.tensor_id))
+    
 def finish_warmup():
     if __TENSOR_MANAGER == None:
         assert "Error, Tensor_Manager is not yet initialized."
     __TENSOR_MANAGER.finish_warmup()
+    
+def record_warmup(weight, input, is_grad):
+    if __TENSOR_MANAGER == None:
+        assert "Error, Tensor_Manager is not yet initialized."
+    if chk_tensor_registered(weight):
+        __TENSOR_MANAGER.record_warmup(weight.tensor_id, input, is_grad)
     
 def get_in_gpu_ratio():
     if __TENSOR_MANAGER == None:
@@ -74,10 +84,10 @@ def chk_tensor_registered(tensor:Union[Tensor, NF4Tensor]):
         assert "Error, Tensor_Manager is not yet initialized."
     return hasattr(tensor, "tensor_id") and __TENSOR_MANAGER.chk_id_availibility(tensor.tensor_id)
     
-def init_tensor_manager(stage_num:int = 1, batch_size:int = 1, swap_activation:bool = False):
+def init_tensor_manager(stage_num:int = 1, batch_size:int = 1, swap_activation:bool = False, swap_weight:bool = False, quantize_weight_method:str = None):
     global __TENSOR_MANAGER
     if __TENSOR_MANAGER == None:
-        __TENSOR_MANAGER = TensorManager(stage_num, batch_size, swap_activation)
+        __TENSOR_MANAGER = TensorManager(stage_num, batch_size, swap_activation, swap_weight, quantize_weight_method)
     
     print("Tensor Manager Initialized")
         
@@ -119,3 +129,8 @@ def total_moving_time():
     if __TENSOR_MANAGER == None:
         assert "Error, Tensor_Manager is not yet initialized."
     return __TENSOR_MANAGER.total_moving_time()
+
+def set_curr_iter(iter_num:int):
+    if __TENSOR_MANAGER == None:
+        assert "Error, Tensor_Manager is not yet initialized."
+    __TENSOR_MANAGER.set_iter(iter_num)

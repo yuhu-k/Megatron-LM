@@ -75,55 +75,55 @@ class LoRALinear(SwapWeightLinear):
             self.rank = int(self.rank / config.tensor_model_parallel_size)
         
         if finetune_weight:
-            self.lora_a = SwapWeightLinear(
-                    input_size=input_size,
-                    output_size=self.rank,
-                    parallel_mode="column",
-                    config=config,
-                    init_method=config.init_method,
-                    bias=bias,
-                    skip_bias_add=skip_bias_add,
-                    skip_weight_param_allocation=skip_weight_param_allocation,
-                    tp_comm_buffer_name=tp_comm_buffer_name,
-                    swap_weight=False,
-                    quantize=False
-                )
-            self.lora_b = SwapWeightLinear(
-                input_size=self.rank,
-                output_size=output_size,
-                parallel_mode="row",
-                config=config,
-                init_method=init_method,
-                bias=bias,
-                skip_bias_add=skip_bias_add,
-                skip_weight_param_allocation=False,
-                tp_comm_buffer_name=tp_comm_buffer_name,
-                swap_weight=False,
-                quantize=False
-            )
-            # self.lora_a = TEColumnParallelLinear(
-            #     input_size=input_size,
-            #     output_size=self.rank,
-            #     config=config,
-            #     init_method=config.init_method,
-            #     bias=bias,
-            #     gather_output=False,
-            #     skip_bias_add=skip_bias_add,
-            #     is_expert=False,
-            #     tp_comm_buffer_name=tp_comm_buffer_name
-            # )
-            
-            # self.lora_b = TERowParallelLinear(
+            # self.lora_a = SwapWeightLinear(
+            #         input_size=input_size,
+            #         output_size=self.rank,
+            #         parallel_mode="column",
+            #         config=config,
+            #         init_method=config.init_method,
+            #         bias=bias,
+            #         skip_bias_add=skip_bias_add,
+            #         skip_weight_param_allocation=skip_weight_param_allocation,
+            #         tp_comm_buffer_name=tp_comm_buffer_name,
+            #         swap_weight=False,
+            #         quantize=False
+            #     )
+            # self.lora_b = SwapWeightLinear(
             #     input_size=self.rank,
             #     output_size=output_size,
+            #     parallel_mode="row",
             #     config=config,
             #     init_method=init_method,
             #     bias=bias,
-            #     input_is_parallel=True,
             #     skip_bias_add=skip_bias_add,
-            #     is_expert=False,
-            #     tp_comm_buffer_name=tp_comm_buffer_name
+            #     skip_weight_param_allocation=False,
+            #     tp_comm_buffer_name=tp_comm_buffer_name,
+            #     swap_weight=False,
+            #     quantize=False
             # )
+            self.lora_a = TEColumnParallelLinear(
+                input_size=input_size,
+                output_size=self.rank,
+                config=config,
+                init_method=config.init_method,
+                bias=bias,
+                gather_output=False,
+                skip_bias_add=skip_bias_add,
+                is_expert=False,
+                tp_comm_buffer_name=tp_comm_buffer_name
+            )
+            
+            self.lora_b = TERowParallelLinear(
+                input_size=self.rank,
+                output_size=output_size,
+                config=config,
+                init_method=init_method,
+                bias=bias,
+                input_is_parallel=True,
+                skip_bias_add=skip_bias_add,
+                is_expert=False,
+                tp_comm_buffer_name=tp_comm_buffer_name
+            )
             self.lora_a.to(torch.cuda.current_device())
             self.lora_b.to(torch.cuda.current_device())
         

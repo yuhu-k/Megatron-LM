@@ -831,8 +831,8 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
         for key in m:
             tmp = m[key]
             key:str = key.replace("encoder","decoder").replace("dense_h_to_4h","linear_fc1")\
-                .replace("input_norm","self_attention.qkv_layernorm")\
-                    .replace("post_attention_norm","mlp.pre_norm")\
+                .replace("input_norm","input_layernorm")\
+                    .replace("post_attention_norm","pre_mlp_layernorm")\
                         .replace("query_key_value","linear_qkv")\
                             .replace("dense_4h_to_h","linear_fc2")\
                                 .replace("final_norm","final_layernorm")
@@ -869,21 +869,28 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
             
         for name, param in model[0].named_parameters():
             if "lora" in name and name not in real_m.keys():
+                import torch.nn.init as init
+                tmp_tensor = param.clone()
                 if "lora_a" in name:
-                    real_m[name] = torch.randn_like(param) * (args.finetune_lora_sigma ** 2)
+                    import math
+                    init.kaiming_uniform_(tmp_tensor, a=math.sqrt(5))
+                    real_m[name] = tmp_tensor * (args.finetune_lora_sigma ** 2)
                 else:
-                    real_m[name] = torch.zeros_like(param)
+                    init.zeros_(tmp_tensor)
+                    real_m[name] = tmp_tensor
                 real_m[name.replace("weight", "_extra_state")] = None
         
         return real_m
     
     strict = False if args.retro_add_retriever else strict
     if len(model) == 1:
-        if args.llama_size != None:
-            real_m = make_llama_state_dict(state_dict['model'])
+        key = f'model{mpu.get_tensor_model_parallel_rank()}' if mpu.get_tensor_model_parallel_world_size() > 1 else 'model'
+
+        if args.llama_size != None:                
+            real_m = make_llama_state_dict(state_dict[key])
             model[0].load_state_dict(real_m, strict=True)
         else:
-            model[0].load_state_dict(state_dict['model'], strict=strict)
+            model[0].load_state_dict(state_dict[key], strict=strict)
     else:
         from tensor_manager import set_stage_and_batch_id, finish_warmup
         for i in range(len(model)):

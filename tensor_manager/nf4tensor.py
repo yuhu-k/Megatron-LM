@@ -654,6 +654,7 @@ class NF4Tensor(torch.Tensor):
         inpt_tensor: torch.Tensor, n_blocks: int, block_size: int, nf4: torch.Tensor
     ) -> torch.Tensor:
         """Convert a tensor to the normalized float weight format"""
+        # inpt_tensor = inpt_tensor.transpose(0, 1)
         flattened_tensor = inpt_tensor.flatten()
         #  Since we are using uint8 we will encode 2 entries per byte
         numel = inpt_tensor.numel()
@@ -954,3 +955,7 @@ def function_cpu(*args, **kwargs):
     updated_attrs = call_from_inner_tensors(nf4tensor, "cpu", args[1:], kwargs)
     updated_attrs["device"] = "cpu"
     return NF4Tensor(*construct_nf4_args(nf4tensor, updated_attrs))
+
+def nf4_to_computable_tensor(nf4tensor: NF4Tensor, dtype: torch.dtype):
+    return nf4tensor.get_original_weight().to(dtype)
+
