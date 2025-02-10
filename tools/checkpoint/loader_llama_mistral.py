@@ -482,7 +482,7 @@ def _load_checkpoint(queue, event: Event, args):
     # so trick it into thinking we are plenty of processes.
     margs.world_size = margs.tensor_model_parallel_size * margs.pipeline_model_parallel_size
 
-    print(margs.max_position_embeddings,margs.seq_length)
+    # print(margs.max_position_embeddings,margs.seq_length)
     margs = validate_args(margs)
 
     margs.use_legacy_models = True

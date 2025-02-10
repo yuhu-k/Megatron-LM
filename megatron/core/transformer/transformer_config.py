@@ -311,7 +311,10 @@ class TransformerConfig(ModelParallelConfig):
     mobius: bool = False
 
     within_stage: bool = False
-
+    
+    non_uniform_dispatch_pp_stage: str = None
+    
+    non_uniform_dp_per_stage: int = None
     def __post_init__(self):
         """ Python dataclass method that is used to modify attributes after initialization.
             See https://docs.python.org/3/library/dataclasses.html#post-init-processing for more details.

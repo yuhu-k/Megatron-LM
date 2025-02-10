@@ -81,11 +81,17 @@ class Encoder(object):
             output[key] = [tokens for partial in tokens_list for tokens in partial]
         return json.dumps(output), len(json_line)
 
-    def encode(self, json_line):
+    def encode(self, json_line, json_keys=None, json_output_key=None):
         data = json.loads(json_line)
         ids = {}
         lens = {}
-        for key in self.args.json_keys:
+        output_ids = {}
+        output_lens = {}
+        if json_keys is None:
+            json_keys = self.args.json_keys
+        if json_output_key is None:
+            json_output_key = self.args.json_output_key
+        for key in json_keys:
             text = data[key]
             if isinstance(text, list):
                 sentences = text
@@ -103,7 +109,25 @@ class Encoder(object):
                 sentence_lens[-1] += 1
             ids[key] = doc_ids
             lens[key] = sentence_lens
-        return ids, lens, len(json_line)
+            
+        text = data[json_output_key]
+        if isinstance(text, list):
+            sentences = text
+        else:
+            sentences = [text]
+        doc_ids = []
+        sentence_lens = []
+        for sentence in sentences:
+            sentence_ids = Encoder.tokenizer.tokenize(sentence)
+            if len(sentence_ids) > 0:
+                doc_ids.extend(sentence_ids)
+                sentence_lens.append(len(sentence_ids))
+        if len(doc_ids) > 0 and self.args.append_eod:
+            doc_ids.append(Encoder.tokenizer.eod)
+            sentence_lens[-1] += 1
+        output_ids = doc_ids
+        output_lens = sentence_lens
+        return ids, lens, len(json_line), output_ids, output_lens
 
 
 class Partition(object):
@@ -173,13 +197,29 @@ class Partition(object):
         startup_end = time.time()
         proc_start = time.time()
         total_bytes_processed = 0
+        max_len = 0
+        min_len = 1000000
         print("Time to startup:", startup_end - startup_start)
-        for i, (doc, sentence_lens, bytes_processed) in enumerate(encoded_docs, start=1):
+        for i, (doc, sentence_lens, bytes_processed, output_id, output_len) in enumerate(encoded_docs, start=1):
             total_bytes_processed += bytes_processed
+            # print(output_len, sentence_lens)
             for key in doc.keys():
                 builders[key].add_document(doc[key], sentence_lens[key])
-            self.print_processing_stats(i, proc_start, total_bytes_processed)
+                builders[key].add_document(output_id, output_len)
+                if sentence_lens[key][-1]+output_len[-1] > max_len:
+                    max_len = sentence_lens[key][-1]+output_len[-1]
+                if sentence_lens[key][-1]+output_len[-1] < min_len:
+                    min_len = sentence_lens[key][-1]+output_len[-1]
+                
+                
+                # for j in range(len(sentence_lens[key])):
+                #     if len(sentence_lens[key][j]) + output_len[j] > max_len:
+                #         max_len = len(sentence_lens[key][j]) + output_len[j]
 
+                
+            self.print_processing_stats(i, proc_start, total_bytes_processed)
+        print("Max length of document:", max_len)
+        print("Min length of document:", min_len)
         fin.close()
         builders[key].finalize(output_idx_files[key])
 
@@ -191,6 +231,8 @@ def get_args():
                        help='Path to input JSON')
     group.add_argument('--json-keys', nargs='+', default=['text'],
                        help='space separate listed of keys to extract from json')
+    group.add_argument('--json-output-key', default=str,
+                       help='space separate listed of key to extract the output text from json')
     group.add_argument('--split-sentences', action='store_true',
                        help='Split documents into sentences.')
     group.add_argument('--keep-newlines', action='store_true',

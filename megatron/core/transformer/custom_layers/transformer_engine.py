@@ -21,6 +21,8 @@ from megatron.core.tensor_parallel import get_cuda_rng_tracker
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
+from megatron.core.utils import is_te_min_version
+# from packaging.version import Version as PkgVersion
 
 _te_version = packaging.version.Version(version("transformer-engine"))
 
@@ -631,3 +633,21 @@ except ImportError:
     SplitAlongDim = None
 
 get_cpu_offload_context = None
+# def get_cpu_offload_context(
+#         enabled, num_layers, model_layers, activation_offloading, weight_offloading
+#     ):
+    
+#         from transformer_engine.pytorch.cpu_offload import (
+#             get_cpu_offload_context as _get_cpu_offload_context,
+#         )
+#         """Get CPU offload context and sync function."""
+#         if is_te_min_version("1.10.0.dev0"):
+#             context, sync_func = _get_cpu_offload_context(
+#                 enabled, num_layers, model_layers, activation_offloading, weight_offloading
+#             )
+#         else:
+#             context, sync_func = _get_cpu_offload_context(
+#                 enabled, num_layers, activation_offloading, weight_offloading
+#             )
+
+#         return context, sync_func

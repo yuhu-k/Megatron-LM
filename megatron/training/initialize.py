@@ -21,6 +21,7 @@ from megatron.training.checkpointing import load_args_from_checkpoint
 from megatron.training.global_vars import set_global_variables
 from megatron.legacy.model.transformer import bias_dropout_add_fused_train
 from megatron.legacy.model.fused_bias_gelu import bias_gelu
+from megatron.my_stage_distribution import get_all_stage_layer_num
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +264,7 @@ def _initialize_distributed():
                 distributed_timeout_minutes=args.distributed_timeout_minutes,
                 nccl_communicator_config_path=args.nccl_communicator_config_path,
                 order='tp-cp-ep-dp-pp' if not args.use_tp_pp_dp_mapping else 'tp-pp-dp',
+                stage_layer_num_spec=get_all_stage_layer_num(args.non_uniform_dp_per_stage) if args.non_uniform_dp_per_stage != None else None
             )
             if args.rank == 0:
                 print(

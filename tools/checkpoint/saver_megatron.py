@@ -23,6 +23,8 @@ def add_arguments(parser):
                        help='Which Transformer implementation to use.')
     group.add_argument('--target-virtual-pipeline-size', type=int, default=None,
                        help='Number of layers per virtual pipeline stage')
+    parser.add_argument('--non-uniform-dispatch-pp-stage', type=str, default=None,
+                        help="Non-uniformly dispatch pp layer nums to each stage by the supplied list")
 
 def save_checkpoint(queue, event:Event, args):
     # Search in directory above this
@@ -125,7 +127,7 @@ def save_checkpoint(queue, event:Event, args):
                 '--no-save-rng',
                 '--no-initialization',
                 '--save-interval', '1',
-                '--save', args.save_dir
+                '--save', args.save_dir,
                 ]
 
     if md.make_vocab_size_divisible_by is not None:
@@ -142,6 +144,9 @@ def save_checkpoint(queue, event:Event, args):
 
     if md.model_type == 'BERT' and not md.bert_binary_head:
         sys.argv.append('--bert-no-binary-head')
+        
+    if args.non_uniform_dispatch_pp_stage is not None:
+        sys.argv.extend(['--non-uniform-dispatch-pp-stage', args.non_uniform_dispatch_pp_stage])
 
     margs = parse_args()
 
@@ -160,7 +165,7 @@ def save_checkpoint(queue, event:Event, args):
                         'encoder_num_layers', 'encoder_seq_length',
                         'distribute_saved_activations',
                         'train_iters', 'lr_decay_iters', 'lr_warmup_iters', 'lr_warmup_fraction',
-                        'start_weight_decay', 'end_weight_decay', 'bf16', 'fp16']
+                        'start_weight_decay', 'end_weight_decay', 'bf16', 'fp16', 'non_uniform_dispatch_pp_stage']
 
 
         for arg, value in vars(md.checkpoint_args).items():
@@ -277,7 +282,9 @@ def save_checkpoint(queue, event:Event, args):
             mpu.set_pipeline_model_parallel_rank(pp_rank)
             post_process = pp_rank == args.target_pipeline_parallel_size - 1
             models = get_models(args.target_tensor_parallel_size, md.params_dtype, False, post_process)
-
+            
+        # print(pp_rank)
+        # print(len(models[0].language_model.encoder.layers))
         for layer in range(len(models[0].language_model.encoder.layers)):
             msg = queue_get(f"transformer layer {total_layer_num}")
 
@@ -416,112 +423,17 @@ def save_checkpoint(queue, event:Event, args):
                 print("ERROR: got some more data but was expecting to be done")
 
         for tp_rank in range(args.target_tensor_parallel_size):
-            
-            model_list[pp_rank % 2][tp_rank].append(models[tp_rank])
+            model_list[pp_rank % real_pipeline_parallel_size][tp_rank].append(models[tp_rank])
             # mpu.set_tensor_model_parallel_rank(tp_rank)
             # save_checkpoint(md.iteration, [models[tp_rank]], None, None,
             #                 num_floating_point_operations_so_far=0)
     
-    # sys.argv = ['script.py',
-    #             '--num-layers', str(md.num_layers),
-    #             '--hidden-size', str(md.hidden_size),
-    #             '--seq-length', str(md.seq_length),
-    #             '--num-attention-heads', str(md.num_attention_heads),
-    #             '--max-position-embeddings', str(md.max_position_embeddings),
-    #             '--position-embedding-type', str(md.position_embedding_type),
-    #             '--tokenizer-type', str(md.tokenizer_type),
-    #             '--tensor-model-parallel-size', str(args.target_tensor_parallel_size),
-    #             '--pipeline-model-parallel-size', str(real_pipeline_parallel_size),
-    #             '--no-masked-softmax-fusion',
-    #             '--no-bias-gelu-fusion',
-    #             '--no-bias-dropout-fusion',
-    #             '--no-async-tensor-model-parallel-allreduce',
-    #             '--use-cpu-initialization',
-    #             '--micro-batch-size', '1',
-    #             '--no-load-optim',
-    #             '--no-load-rng',
-    #             '--no-save-optim',
-    #             '--no-save-rng',
-    #             '--no-initialization',
-    #             '--save-interval', '1',
-    #             '--save', args.save_dir,
-    #             '--num-layers-per-virtual-pipeline-stage', str(num_layers_per_virtual_pipeline_stage),
-    #             '--swiglu'
-    #             ]    
-    # if md.make_vocab_size_divisible_by is not None:
-    #     sys.argv.extend(['--make-vocab-size-divisible-by', str(md.make_vocab_size_divisible_by)])
-    # if md.params_dtype == torch.float16:
-    #     sys.argv.append('--fp16')
-    # elif md.params_dtype == torch.bfloat16:
-    #     sys.argv.append('--bf16')
-
-    # if md.output_layer:
-    #     sys.argv.append('--untie-embeddings-and-output-weights')
-    # if not md.linear_bias:
-    #     sys.argv.append('--disable-bias-linear')
-
-    # if md.model_type == 'BERT' and not md.bert_binary_head:
-    #     sys.argv.append('--bert-no-binary-head')
-
-    # margs = parse_args()
-
-    # if hasattr(md, 'checkpoint_args'):
-    #     # These are arguments that we are either changing, or cause problems for validation if they are set
-    #     # Note that some of these deal with T5 so will need to be changed if we support T5.
-    #     args_to_keep = ['tensor_model_parallel_size', 'pipeline_model_parallel_size', 'world_size', 'params_dtype',
-    #                     'num_layers_per_virtual_pipeline_stage', 'virtual_pipeline_model_parallel_size',
-    #                     'masked_softmax_fusion', 'bias_gelu_fusion', 'bias_dropout_fusion',
-    #                     'sequence_parallel', 'async_tensor_model_parallel_allreduce',
-    #                     'no_load_optim', 'no_load_rng', 'no_save_optim', 'no_save_rng',
-    #                     'vocab_file', 'tokenizer_model',
-    #                     'save_interval', 'save',
-    #                     'perform_initialization', 'use_cpu_initialization',
-    #                     'recompute_granularity', 'recompute_num_layers', 'recompute_method',
-    #                     'encoder_num_layers', 'encoder_seq_length',
-    #                     'distribute_saved_activations',
-    #                     'train_iters', 'lr_decay_iters', 'lr_warmup_iters', 'lr_warmup_fraction',
-    #                     'start_weight_decay', 'end_weight_decay', 'bf16', 'fp16']
-
-
-    #     for arg, value in vars(md.checkpoint_args).items():
-    #         if arg in args_to_keep:
-    #             continue
-    #         if not hasattr(margs, arg):
-    #             print(f"Checkpoint had argument {arg} but new arguments does not have this.")
-    #             continue
-    #         if getattr(margs, arg) != value:
-    #             print(f"Overwriting default {arg} value {getattr(margs, arg)} with value from checkpoint {value}.")
-    #             setattr(margs, arg, value)
-
-    # validate_args(margs)
-
-    # # Use MLM models.
-    # margs.use_legacy_models = True
-    # margs.transformer_impl = args.saver_transformer_impl
-
-    # # Do not instantiate Tensorboard
-    # margs.tensorboard_dir = None
-
-    # set_global_variables(margs, build_tokenizer=False)
-
-    # # margs = megatron args
-    # margs = get_args()
-    
-    # if hasattr(md, 'consumed_train_samples'):
-    #     margs.consumed_train_samples = md.consumed_train_samples
-    #     margs.consumed_valid_samples = md.consumed_valid_samples
-    #     print(f"Setting consumed_train_samples to {margs.consumed_train_samples}"
-    #           f" and consumed_valid_samples to {margs.consumed_valid_samples}")
-    # else:
-    #     print("consumed_train_samples not provided.")
-    
-    # mpu.set_tensor_model_parallel_world_size(args.target_tensor_parallel_size)
-    # mpu.set_pipeline_model_parallel_world_size(real_pipeline_parallel_size)
-    # mpu.set_virtual_pipeline_model_parallel_world_size(virtual_pipeline_parallel_size_per_pipeline_stage)
-    # fused_kernels.load(margs)
     args = get_args()
     args.pipeline_model_parallel_size = real_pipeline_parallel_size
-    args.num_layers_per_virtual_pipeline_stage = num_layers_per_virtual_pipeline_stage
+    if virtual_pipeline_parallel_size_per_pipeline_stage > 1:
+        args.num_layers_per_virtual_pipeline_stage = num_layers_per_virtual_pipeline_stage
+    else:
+        args.num_layers_per_virtual_pipeline_stage = None
     args.swiglu = True
     #args.overlap_p2p_comm = True
     args.transformer_pipeline_model_parallel_size = real_pipeline_parallel_size

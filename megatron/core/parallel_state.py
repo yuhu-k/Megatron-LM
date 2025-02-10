@@ -86,6 +86,9 @@ _GLOBAL_MEMORY_BUFFER = None
 # MOE logging
 _MOE_AUX_LOSSES_LOGGING_TRACKER = {}
 
+# Non-uniform model parallelism counter
+_NON_UNIFORM_MODEL_PARALLELISM = False
+
 
 def get_nccl_options(pg_name, nccl_comm_cfgs):
     """Set the NCCL process group options.
@@ -295,6 +298,72 @@ class RankGenerator(object):
         mask = self.get_mask(order, token)
         ranks = generate_masked_orthogonal_rank_groups(self.world_size, parallel_size, mask)
         return ranks
+    
+class NonUniformRankGenerator:
+    def __init__(self, tp: int, ep: int, dp_per_stage: List[int], cp: int, order: str) -> None:
+        """
+        參數:
+            tp: tensor parallelism
+            ep: expert parallelism
+            dp_per_stage: 每個 pipeline stage 的 data parallel 數量，例如 [2,1,1]
+            pp: pipeline stage 數量 (例如 3)
+            cp: 其它自定的 model parallel 維度 (可視情況不使用)
+            order: 對應原先所希望的 parallel 順序 (此示範固定為 'tp-cp-ep-dp-pp')
+        """
+        self.tp = tp
+        self.ep = ep
+        self.cp = cp
+        self.dp_per_stage = dp_per_stage  # [2,1,1]
+
+        # 計算 world_size = tp * cp * ep * sum(dp_per_stage) * pp
+        self.dp_total = sum(dp_per_stage)
+        self.world_size = tp * cp * ep * self.dp_total
+
+        self.order = order.lower()
+
+    def get_ranks(self, tokens, independent_ep=False) -> List[List[int]]:
+        """
+        取得每個 (stage, tp, cp, ep) 所對應的 Data Parallel 群組。
+        回傳格式: List of rank groups (List[int])。
+        每個內層 list 是同一個 stage + (tp, cp, ep) 的所有 dp ranks。
+        """
+        groups = {}
+
+        if self.tp == 2:
+            groups['pp'] = [[0, 4, 6], [1, 5, 7], [2, 4, 6], [3, 5, 7]]
+            groups['dp'] = [[0, 2], [1, 3], [4], [5], [6], [7]]
+            groups['tp'] = [[0, 1], [2, 3], [4, 5], [6, 7]]
+            groups['ptp'] = [[0, 1, 2, 3, 4, 5, 6, 7]]
+            groups['dtp'] = [[0, 1, 2, 3], [4, 5, 6, 7]]
+            groups['rest'] = [[0], [1], [2], [3], [4], [5], [6], [7]]
+        elif self.tp == 1:
+            if self.dp_total == 4:
+                groups['pp'] = [[0, 2, 3], [1, 2, 3]]
+                groups['dp'] = [[0, 1], [2], [3]]
+                groups['tp'] = [[0], [1], [2], [3]]
+                groups['ptp'] = [[0, 1, 2, 3]]
+                groups['dtp'] = [[0, 1], [2], [3]]
+                groups['rest'] = [[0], [1], [2], [3]]
+            elif self.dp_total == 8:
+                groups['pp'] = [[0, 4, 6], [1, 5, 7], [2, 4, 6], [3, 5, 7]]
+                groups['dp'] = [[0, 1, 2, 3], [4, 5], [6, 7]]
+                groups['tp'] = [[0], [1], [2], [3], [4], [5], [6], [7]]
+                groups['ptp'] = [[0, 1, 2, 3, 4, 5, 6, 7]]
+                groups['dtp'] = [[0, 1, 2, 3], [4, 5], [6, 7]]
+                groups['rest'] = [[0], [1], [2], [3], [4], [5], [6], [7]]
+        
+        if 'tp' in tokens and 'dp' in tokens:
+            return groups['dtp']
+        elif 'tp' in tokens and 'pp' in tokens:
+            return groups['ptp']
+        elif 'tp' in tokens:
+            return groups['tp']
+        elif 'dp' in tokens:
+            return groups['dp']
+        elif 'pp' in tokens:
+            return groups['pp']
+        else:
+            return groups['rest']
 
 
 def initialize_model_parallel(
@@ -308,6 +377,7 @@ def initialize_model_parallel(
     nccl_communicator_config_path: Optional[str] = None,
     distributed_timeout_minutes: int = 30,
     order: str = "tp-cp-ep-dp-pp",
+    stage_layer_num_spec: Optional[List[int]] = None,
 ) -> None:
     """Initialize model data parallel groups.
 
@@ -416,9 +486,11 @@ def initialize_model_parallel(
     # Get world size and rank. Ensure some consistencies.
     assert torch.distributed.is_initialized()
     world_size: int = torch.distributed.get_world_size()
+    # print(f"world_size: {world_size} {torch.distributed.get_rank()} {stage_layer_num_spec}")
 
     if (
-        world_size
+        stage_layer_num_spec is None 
+        and world_size
         % (tensor_model_parallel_size * pipeline_model_parallel_size * context_parallel_size)
         != 0
     ):
@@ -474,14 +546,25 @@ def initialize_model_parallel(
         with open(nccl_communicator_config_path, "r") as stream:
             nccl_comm_cfgs = yaml.safe_load(stream)
 
-    rank_generator = RankGenerator(
-        tp=tensor_model_parallel_size,
-        ep=expert_model_parallel_size,
-        dp=data_parallel_size,
-        pp=pipeline_model_parallel_size,
-        cp=context_parallel_size,
-        order=order,
-    )
+    if stage_layer_num_spec is not None:
+        rank_generator = NonUniformRankGenerator(
+            tp=tensor_model_parallel_size,
+            ep=expert_model_parallel_size,
+            dp_per_stage=stage_layer_num_spec,
+            cp=context_parallel_size,
+            order=order,
+        )
+        global _NON_UNIFORM_MODEL_PARALLELISM
+        _NON_UNIFORM_MODEL_PARALLELISM = True
+    else:
+        rank_generator = RankGenerator(
+            tp=tensor_model_parallel_size,
+            ep=expert_model_parallel_size,
+            dp=data_parallel_size,
+            pp=pipeline_model_parallel_size,
+            cp=context_parallel_size,
+            order=order,
+        )
     timeout = timedelta(minutes=distributed_timeout_minutes)
 
     # Build the data-parallel groups.
@@ -554,7 +637,14 @@ def initialize_model_parallel(
             ranks, timeout=timeout, pg_options=get_nccl_options('mp', nccl_comm_cfgs)
         )
         if rank in ranks:
-            _MODEL_PARALLEL_GROUP = group
+            if _NON_UNIFORM_MODEL_PARALLELISM:
+                if _MODEL_PARALLEL_GROUP == None:
+                    _MODEL_PARALLEL_GROUP = [group]
+                else:
+                    _MODEL_PARALLEL_GROUP.append(group)
+            else:
+                if _MODEL_PARALLEL_GROUP == None:
+                    _MODEL_PARALLEL_GROUP = group
 
     # Build the model-parallel groups with expert parallel
     global _MODEL_AND_EXPERT_PARALLEL_GROUP
@@ -595,13 +685,38 @@ def initialize_model_parallel(
     global _POSITION_EMBEDDING_GROUP
     global _POSITION_EMBEDDING_GLOBAL_RANKS
     assert _POSITION_EMBEDDING_GROUP is None, 'position embedding group is already initialized'
+    pp_rank = None
+    world_size = None
+    groups_prev_and_next = []
     for ranks in rank_generator.get_ranks('pp'):
         group = torch.distributed.new_group(
             ranks, timeout=timeout, pg_options=get_nccl_options('pp', nccl_comm_cfgs)
         )
+
+
+    
+        
         if rank in ranks:
-            _PIPELINE_MODEL_PARALLEL_GROUP = group
-            _PIPELINE_GLOBAL_RANKS = ranks
+            if _NON_UNIFORM_MODEL_PARALLELISM:
+                if pp_rank is None:
+                    pp_rank = torch.distributed.get_rank(group)
+                    world_size = torch.distributed.get_world_size(group)
+                prev_rank = ranks[(pp_rank - 1) % world_size]
+                next_rank = ranks[(pp_rank + 1) % world_size]
+                if _PIPELINE_MODEL_PARALLEL_GROUP == None:
+                    _PIPELINE_MODEL_PARALLEL_GROUP = [group]
+                    _PIPELINE_GLOBAL_RANKS = [ranks]
+                else:
+                    if (prev_rank, next_rank) not in groups_prev_and_next:
+                        _PIPELINE_MODEL_PARALLEL_GROUP.append(group)
+                        _PIPELINE_GLOBAL_RANKS.append(ranks)
+                        groups_prev_and_next.append((prev_rank, next_rank))
+            else:
+                if _PIPELINE_MODEL_PARALLEL_GROUP == None:
+                    _PIPELINE_MODEL_PARALLEL_GROUP = group
+                if _PIPELINE_GLOBAL_RANKS == None:
+                    _PIPELINE_GLOBAL_RANKS = ranks
+
         # Setup embedding group (to exchange gradients between
         # first and last stages).
         if len(ranks) > 1:
@@ -900,7 +1015,8 @@ def get_pipeline_model_parallel_world_size():
     global _MPU_PIPELINE_MODEL_PARALLEL_WORLD_SIZE
     if _MPU_PIPELINE_MODEL_PARALLEL_WORLD_SIZE is not None:
         return _MPU_PIPELINE_MODEL_PARALLEL_WORLD_SIZE
-    return torch.distributed.get_world_size(group=get_pipeline_model_parallel_group())
+    group = get_pipeline_model_parallel_group()
+    return torch.distributed.get_world_size(group=group if not _NON_UNIFORM_MODEL_PARALLELISM else group[0])
 
 
 def set_expert_model_parallel_rank(rank):
@@ -940,7 +1056,8 @@ def get_pipeline_model_parallel_rank():
     global _MPU_PIPELINE_MODEL_PARALLEL_RANK
     if _MPU_PIPELINE_MODEL_PARALLEL_RANK is not None:
         return _MPU_PIPELINE_MODEL_PARALLEL_RANK
-    return torch.distributed.get_rank(group=get_pipeline_model_parallel_group())
+    group = get_pipeline_model_parallel_group()
+    return torch.distributed.get_rank(group=group if not _NON_UNIFORM_MODEL_PARALLELISM else group[0])
 
 
 def get_pipeline_model_parallel_split_rank():
@@ -1094,15 +1211,30 @@ def get_pipeline_model_parallel_next_rank():
     assert _PIPELINE_GLOBAL_RANKS is not None, "Pipeline parallel group is not initialized"
     rank_in_pipeline = get_pipeline_model_parallel_rank()
     world_size = get_pipeline_model_parallel_world_size()
-    return _PIPELINE_GLOBAL_RANKS[(rank_in_pipeline + 1) % world_size]
 
+    if _NON_UNIFORM_MODEL_PARALLELISM:
+        output = []
+        for rank in _PIPELINE_GLOBAL_RANKS:
+            if rank[(rank_in_pipeline + 1) % world_size] not in output:
+                output.append(rank[(rank_in_pipeline + 1) % world_size])
+        return output
+    else:
+        return _PIPELINE_GLOBAL_RANKS[(rank_in_pipeline + 1) % world_size]
 
 def get_pipeline_model_parallel_prev_rank():
     """Return the global rank that preceeds the caller in the pipeline"""
     assert _PIPELINE_GLOBAL_RANKS is not None, "Pipeline parallel group is not initialized"
     rank_in_pipeline = get_pipeline_model_parallel_rank()
     world_size = get_pipeline_model_parallel_world_size()
-    return _PIPELINE_GLOBAL_RANKS[(rank_in_pipeline - 1) % world_size]
+    if _NON_UNIFORM_MODEL_PARALLELISM:
+        output = []
+        for rank in _PIPELINE_GLOBAL_RANKS:
+            if rank[(rank_in_pipeline - 1) % world_size] not in output:
+                output.append(rank[(rank_in_pipeline - 1) % world_size])
+            
+        return output
+    else:
+        return _PIPELINE_GLOBAL_RANKS[(rank_in_pipeline - 1) % world_size]
 
 
 def get_data_parallel_world_size(with_context_parallel=False):
@@ -1265,3 +1397,7 @@ def destroy_model_parallel():
     _MPU_EXPERT_MODEL_PARALLEL_WORLD_SIZE = None
     global _MPU_EXPERT_MODEL_PARALLEL_RANK
     _MPU_EXPERT_MODEL_PARALLEL_RANK = None
+
+def get_non_uniform_model_parallelism():
+    global _NON_UNIFORM_MODEL_PARALLELISM
+    return _NON_UNIFORM_MODEL_PARALLELISM

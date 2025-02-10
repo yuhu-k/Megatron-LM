@@ -32,6 +32,10 @@ from megatron.training.arguments import core_transformer_config_from_args
 from megatron.training.yaml_arguments import core_transformer_config_from_yaml
 from megatron.core.models.llama.llama_layer_specs import get_llama_layer_with_transformer_engine_spec
 from training_speed_recorder import get_recorder
+from megatron.core.datasets.gpt_finetune_dataset import GPTFinetuneDataset
+
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 
 
 stimer = StragglerDetector()
@@ -182,6 +186,7 @@ def forward_step(data_iterator, model: LLaMAModel):
         recorder = get_recorder()
         recorder.add_tokens_count(tokens.numel())
     with stimer:
+        # print(tokens.size(), labels.size())
         output_tensor = model(tokens, position_ids, attention_mask,
                               labels=labels)
     return output_tensor, partial(loss_func, loss_mask)
@@ -229,6 +234,8 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
 
     if args.mock_data:
         dataset_type = MockGPTDataset
+    elif args.llama:
+        dataset_type = GPTFinetuneDataset
     else:
         dataset_type = GPTDataset
 

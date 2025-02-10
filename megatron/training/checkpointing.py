@@ -359,7 +359,7 @@ def save_checkpoint(iteration, model, optimizer, opt_param_scheduler,
             # [ModelOpt]: Inject modelopt_state into state_dict
             if has_nvidia_modelopt:
                 save_modelopt_state(model, state_dict)
-
+                
             # Save.
             ensure_directory_exists(checkpoint_name)
             torch.save(state_dict, checkpoint_name)

@@ -10,9 +10,9 @@ export NCCL_DEBUG=INFO
 GPUS_PER_NODE=2
 MODEL_TYPE="7b-chat" #"13b"
 # Change for multinode config
-MASTER_ADDR=eclab40902
+MASTER_ADDR=eclab3080
 MASTER_PORT=6000
-NNODES=2
+NNODES=4
 if [ $# -ne 0 ]; then
     NNODES=$@
 fi
@@ -28,25 +28,46 @@ else
     export NCCL_SOCKET_IFNAME=eno1 && export GLOO_SOCKET_IFNAME=eno1
 fi
 
-if [[ $MODEL_TYPE == 7b* ]]; then
-    # TPdegree=1
-    LAYER_NUM=32
-elif [[ $MODEL_TYPE == 13b* ]]; then
-    # TPdegree=2
-    LAYER_NUM=40
-elif [[ $MODEL_TYPE == 34b* ]]; then
-    # TPdegree=4
-    LAYER_NUM=48
-elif [[ $MODEL_TYPE == 70b* ]]; then
-    # TPdegree=8
-    LAYER_NUM=80
-else
-    echo "MODEL_TYPE 設定有誤: $MODEL_TYPE"
-fi
+# if [[ $MODEL_TYPE == 7b* ]]; then
+#     # TPdegree=1
+#     LAYER_NUM=32
+# elif [[ $MODEL_TYPE == 13b* ]]; then
+#     # TPdegree=2
+#     LAYER_NUM=40
+# elif [[ $MODEL_TYPE == 34b* ]]; then
+#     # TPdegree=4
+#     LAYER_NUM=48
+# elif [[ $MODEL_TYPE == 70b* ]]; then
+#     # TPdegree=8
+#     LAYER_NUM=80
+# else
+#     echo "MODEL_TYPE 設定有誤: $MODEL_TYPE"
+# fi
 
 TPdegree=1
-PPdegree=2
-DPdegree=$(( WORLD_SIZE / TPdegree / PPdegree ))
+PPdegree=3
+# DPdegree=$(( WORLD_SIZE / TPdegree / PPdegree ))
+if [[ $HOSTNAME == *4090* ]]; then
+    DPdegree=2
+    MicroBatchSize=10
+    LAYER_NUM=12
+    if [[ $HOSTNAME == *2b* ]]; then
+        RANK=3
+    else
+        RANK=2
+    fi
+else
+    DPdegree=2
+    MicroBatchSize=5
+    LAYER_NUM=8
+    if [[ $HOSTNAME == *3080* ]]; then
+        RANK=0
+    else
+        RANK=1
+    fi
+fi
+export NODE_RANK=$RANK
+echo rank:$RANK
 VPPdegree=1
 GLOBAL_BATCH_SIZE=60
 if [[ $MODEL_TYPE == 70b* ]]; then
@@ -60,7 +81,7 @@ if [[ $VPPdegree == 1 ]]; then
 else
     CHECKPOINT_PATH=${CHECKPOINT_PATH_BASE}/tp${TPdegree}-pp${PPdegree}-vpp${VPPdegree}
 fi
-# CHECKPOINT_PATH=/tmp2/llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
+#CHECKPOINT_PATH=/tmp2/llama-2-${MODEL_TYPE}-me/hf/tp${TPdegree}-pp${PPdegree}
 # DATA_PATH=/tmp2/Megatron-LM/wizardlm_orca_dataset/output_instruction_document
 DATA_PATH=./wizardlm_dataset_2/output_instruction_document
 RESULTS_PATH=./results/$HOSTNAME/$TIME
@@ -71,30 +92,26 @@ FILENAME="TP_${TPdegree}_PP_${PPdegree}_DP_${DPdegree}"
 
 PROFILE_DIR="/tmp2/yuhu/"
 
-if [[ $HOSTNAME == eclab3080 ]]; then
-    NODE_RANK=0
-    # LAYER_NUM=8
-elif [[ $HOSTNAME == mgmt01 ]]; then
-    NODE_RANK=1
-    # LAYER_NUM=4
-elif [[ $HOSTNAME == *40902 ]]; then
-    NODE_RANK=1
-    # LAYER_NUM=12
-elif [[ $HOSTNAME == *40902b ]]; then
-    NODE_RANK=2
-    # LAYER_NUM=12
-else
-    echo "Error, no such hostname '$HOSTNAME'"
-    exit
-fi
-LAYER_NUM=$(($LAYER_NUM / $PPdegree / $VPPdegree))
+# if [[ $HOSTNAME == "eclab3080" ]]; then
+#     NODE_RANK=0
+# elif [[ $HOSTNAME == mgmt01 ]]; then
+#     NODE_RANK=3
+# elif [[ $HOSTNAME == *40902 ]]; then
+#     NODE_RANK=2
+# elif [[ $HOSTNAME == *40902b ]]; then
+#     NODE_RANK=1
+# else
+#     echo "Error, no such hostname '$HOSTNAME'"
+#     exit
+# fi
+
 DISTRIBUTED_ARGS="
     --nproc_per_node $GPUS_PER_NODE \
     --nnodes $NNODES \
     --rdzv_id 12345 \
-    --rdzv_backend c10d \
+    --rdzv_backend static \
     --rdzv_endpoint ${MASTER_ADDR}:${MASTER_PORT} \
-    --node_rank $NODE_RANK \
+    --node_rank $RANK \
 "
 
 GPT_ARGS="
@@ -126,19 +143,16 @@ GPT_ARGS="
 	--no-masked-softmax-fusion \
 	--attention-softmax-in-fp32 \
     --train-iters  $(echo "scale=0; 54974 / $GLOBAL_BATCH_SIZE * 0.9 / 1" | bc)\
-    --recompute-num-layers $LAYER_NUM\
+    --recompute-num-layers $LAYER_NUM \
     --recompute-method block \
     --recompute-granularity full \
     --num-layers-per-virtual-pipeline-stage $LAYER_NUM
 "
 
-    # $(($LAYER_NUM / $PPdegree / $VPPdegree))     
-
+    # --num-layers-per-virtual-pipeline-stage $(($LAYER_NUM / $PPdegree / $VPPdegree))
     # --apply-query-key-layer-scaling \
     # --accumulate-allreduce-grads-in-fp32 \
     # --fp16-lm-cross-entropy
-    #    --num-layers-per-virtual-pipeline-stage $LAYER_NUM \
-
 
 
 
@@ -152,6 +166,10 @@ LLAMA_ARGS="
     #     --swap-weight \
     # --offload-activation \
     # --overlap-dequantize
+
+
+
+
 
 NSYS_ARGS="
     --force-overwrite true \
@@ -194,11 +212,11 @@ LMS_ARGS="
     --lms-swap-policy dynamic-early \
 "
 CMD="\
-    nsys profile $NSYS_ARGS \
+    RANK=$RANK nsys profile $NSYS_ARGS \
     torchrun $DISTRIBUTED_ARGS finetune_llama.py \
     --distributed-backend nccl \
     $GPT_ARGS \
-    --micro-batch-size 5 \
+    --micro-batch-size $MicroBatchSize \
     $DATA_ARGS \
     $OUTPUT_ARGS \
     $LLAMA_ARGS \
@@ -207,16 +225,16 @@ CMD="\
     --save $RESULTS_PATH \
     --load $CHECKPOINT_PATH \
     $PROF_ARGS \
+    --non-uniform-dispatch-pp-stage 8,12,12 \
+    --non-uniform-dp-per-stage 4,2,2 \
 "
 
 
     # $LMS_ARGS
     # --skip-train
     # --topk-k-rate 0.1
-    #         --non-uniform-dispatch-pp-stage 8,12,12
 
-    # --non-uniform-dp-per-stage 2,1,1 \
 
 # finetune-method : lora, qlora, fp8-e4m3-lora, fp8-e5m2-lora, rtn-lora, sa
-echo $CMD
+
 eval $CMD

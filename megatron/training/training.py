@@ -693,6 +693,7 @@ def train_step(forward_step_func, data_iterator,
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False)
+    torch.cuda.synchronize()
     # print(losses_reduced)
 
 
@@ -721,7 +722,7 @@ def train_step(forward_step_func, data_iterator,
         timer.pop()
     timers('optimizer').stop()
     
-
+    torch.cuda.synchronize()
         
     # torch.cuda.empty_cache()
     # allocated = torch.cuda.memory_allocated() / 1024**3

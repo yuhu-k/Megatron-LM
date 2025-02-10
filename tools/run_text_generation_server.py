@@ -25,7 +25,7 @@ from megatron.core.models.llama.llama_layer_specs import (
 import torch
 from typing import Union
 import megatron
-from swap_manager import init_weight_swapper
+# from swap_manager import init_weight_swapper
 import large_model_gpu as lms
 
 
@@ -98,11 +98,13 @@ if __name__ == "__main__":
                                        'no_load_optim': True})
 
     args = get_args()
-    init_weight_swapper()
-    lms.init_pack_hook(True, False, False)
+    from tensor_manager import init_tensor_manager
+    init_tensor_manager(stage_num=1, batch_size=1, swap_activation=False, swap_weight=False, quantize_weight_method=None)
+    # init_weight_swapper()
+    # lms.init_pack_hook(True, False, False)
     
     if args.num_layers_per_virtual_pipeline_stage is not None:
-        print("Interleaved pipeline schedule is not yet supported for text generation.")
+        print("Interleaved pipeline schedule is not yet supported for text generation.", args.num_layers_per_virtual_pipeline_stage)
         exit()
     print_rank_0("WARNING: Forcing exit_on_missing_checkpoint to True for text "
                  "generation.")

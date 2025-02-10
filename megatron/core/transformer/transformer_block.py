@@ -29,12 +29,36 @@ from megatron.core.transformer.utils import sharded_state_dict_default
 from megatron.core.utils import make_sharded_tensor_for_checkpoint, make_viewless_tensor
 arraypp = None
 from megatron.training.global_vars import get_args
+from megatron.my_stage_distribution import get_layer_num
 
 def get_num_layers_to_build(config: TransformerConfig) -> int:
-
-    num_layers_per_pipeline_rank = (
-        config.num_layers // parallel_state.get_pipeline_model_parallel_world_size()
-    )
+    
+    if config.non_uniform_dispatch_pp_stage is not None:
+        # Non-uniform pipeline parallelism:
+        # Number of layers in each model chunk follows the non-uniform distribution list,
+        # which is specified in the config.
+        
+        # try:
+        #     if osp.exists(config.non_uniform_dispatch_pp_stage):
+        #         with open(config.non_uniform_dispatch_pp_stage, 'r') as f:
+        #             non_uniform_dispatch_pp_stage = f.read().strip()
+        #             if ',' in non_uniform_dispatch_pp_stage:
+        #                 non_uniform_dispatch_pp_stage = non_uniform_dispatch_pp_stage.split(',')
+        #             elif ' ' in non_uniform_dispatch_pp_stage.strip():
+        #                 non_uniform_dispatch_pp_stage = non_uniform_dispatch_pp_stage.split(' ')
+        #             else:
+        #                 non_uniform_dispatch_pp_stage = non_uniform_dispatch_pp_stage.split('\n')
+        #     else:
+        #         non_uniform_dispatch_pp_stage = config.non_uniform_dispatch_pp_stage.split(',')
+        # except:
+        #     raise ValueError(f"Invalid non_uniform_dispatch_pp_stage: {config.non_uniform_dispatch_pp_stage}")
+            
+        # num_layers_per_pipeline_rank = non_uniform_dispatch_pp_stage[parallel_state.get_pipeline_model_parallel_rank()]
+        num_layers_per_pipeline_rank = get_layer_num(config.non_uniform_dispatch_pp_stage)
+    else:
+        num_layers_per_pipeline_rank = (
+            config.num_layers // parallel_state.get_pipeline_model_parallel_world_size()
+        )
 
     if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
         # Interleaved pipeline parallelism:
@@ -104,7 +128,7 @@ class TransformerBlock(MegatronModule):
         post_process: bool = True,
     ):
         super().__init__(config=config)
-        self.k = config.topk_k_rate
+        # self.k = config.topk_k_rate
         self.submodules = _get_block_submodules(config, spec)
         self.post_layer_norm = post_layer_norm
         self.pre_process = pre_process

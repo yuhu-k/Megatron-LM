@@ -299,6 +299,8 @@ class Attention(MegatronModule, ABC):
         if self.config.profile:
             # main_stream = torch.cuda.current_stream()
             # main_stream.synchronize()
+            if not self.config.overlap_p2p_comm:
+                torch.cuda.synchronize()
             torch.cuda.nvtx.range_push("attention")
             from megatron.training.global_vars import get_self_define_timer
             timer = get_self_define_timer()
@@ -404,6 +406,8 @@ class Attention(MegatronModule, ABC):
         # main_stream.synchronize()
         torch.cuda.nvtx.range_pop()
         if self.config.profile:
+            if not self.config.overlap_p2p_comm:
+                torch.cuda.synchronize()
             # main_stream.synchronize()
             torch.cuda.nvtx.range_pop()
             timer.pop()

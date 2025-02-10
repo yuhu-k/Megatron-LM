@@ -192,6 +192,9 @@ class LLaMAModel(LanguageModule):
         """
         # If decoder_input is provided (not None), then input_ids and position_ids are ignored.
         # Otherwise, apply embedding layer on input_ids and position_ids to get decoder_input.
+        # if self.config.profile and not self.config.overlap_p2p_comm:
+        #     torch.cuda.synchronize()
+        #     torch.cuda.nvtx.range_push("Llama forward")
 
         # Decoder embedding.
         if decoder_input is not None:
@@ -245,12 +248,12 @@ class LLaMAModel(LanguageModule):
         logits, _ = self.output_layer(hidden_states, weight=output_weight)
         if self.config.profile:
             torch.cuda.nvtx.range_pop()
-        if self.embedding_activation_buffer != None:
-            for embedding_activation in self.embedding_activation_buffer:
-                print(embedding_activation.size())
-        if self.grad_output_buffer is not None:
-            for grad_output in self.grad_output_buffer:
-                print(grad_output.size())
+        # if self.embedding_activation_buffer != None:
+        #     for embedding_activation in self.embedding_activation_buffer:
+        #         print(embedding_activation.size())
+        # if self.grad_output_buffer is not None:
+        #     for grad_output in self.grad_output_buffer:
+        #         print(grad_output.size())
         if labels is None:
             # [s b h] => [b s h]
             return logits.transpose(0, 1).contiguous()
@@ -267,7 +270,9 @@ class LLaMAModel(LanguageModule):
         # print(f"Model logit range: {logits.min().item()} to {logits.max().item()}")
 
         
-
+        # if self.config.profile and not self.config.overlap_p2p_comm:
+        #     torch.cuda.synchronize()
+        #     torch.cuda.nvtx.range_pop()
         return loss
 
     def sharded_state_dict(

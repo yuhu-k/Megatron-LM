@@ -15,7 +15,7 @@ MODEL_TYPE="7b-chat"
 #fi
 
 TP=1
-PP=1
+PP=4
 VPP=1
 
 LLAMA_META_FORMAT_DIR="./Llama-2-${MODEL_TYPE}-hf"
@@ -44,6 +44,7 @@ python tools/checkpoint/convert.py --model-type GPT \
    --target-tensor-parallel-size ${TP} \
    --target-pipeline-parallel-size $(($PP * $VPP)) \
    --fp16 \
-   --target-virtual-pipeline-size $VPP
+   --target-virtual-pipeline-size $VPP \
+#    --non-uniform-dispatch-pp-stage 8,12,12
 
 

@@ -17,6 +17,7 @@ from megatron.core.models.retro.utils import (
 )
 from megatron.core.transformer import TransformerConfig
 from megatron.training.activations import squared_relu
+from megatron.my_stage_distribution import get_rank_pp_dp_rank, get_layer_num
 
 
 def parse_args(extra_args_provider=None, ignore_unknown_args=False):
@@ -172,12 +173,12 @@ def validate_args(args, defaults={}):
     # Checks.
     model_parallel_size = args.pipeline_model_parallel_size * \
                           args.tensor_model_parallel_size
-    assert args.world_size % (model_parallel_size * args.context_parallel_size) == 0, \
+    assert args.non_uniform_dispatch_pp_stage != None or args.world_size % (model_parallel_size * args.context_parallel_size) == 0, \
         'world size ({}) is not divisible by tensor parallel size ({}) times ' \
         'pipeline parallel size ({}) times context parallel size ({})'.format(
         args.world_size, args.tensor_model_parallel_size,
         args.pipeline_model_parallel_size, args.context_parallel_size)
-    args.data_parallel_size = args.world_size // (model_parallel_size * args.context_parallel_size)
+    args.data_parallel_size = args.world_size // (model_parallel_size * args.context_parallel_size) if args.non_uniform_dp_per_stage is None else get_rank_pp_dp_rank(args.non_uniform_dp_per_stage, args.rank, args.tensor_model_parallel_size)[1]
     if args.rank == 0:
         print('using world size: {}, data-parallel size: {}, '
               'context-parallel size: {} '
@@ -259,11 +260,15 @@ def validate_args(args, defaults={}):
                 'when interleaved schedule is used and p2p communication overlap is disabled, '\
                 'pipeline-model-parallel size should be greater than 2 to avoid having multiple '\
                 'p2p sends and recvs between same 2 ranks per communication batch'
-        assert args.num_layers % args.transformer_pipeline_model_parallel_size == 0, \
-            'number of layers should be divisible by the pipeline parallel size'
-        num_layers_per_pipeline_stage = args.num_layers // args.transformer_pipeline_model_parallel_size
-        assert num_layers_per_pipeline_stage % args.num_layers_per_virtual_pipeline_stage == 0, \
-            'number of layers per pipeline stage must be divisible number of layers per virtual pipeline stage'
+        if args.non_uniform_dispatch_pp_stage is not None :
+            pp_rank  = get_rank_pp_dp_rank(args.non_uniform_dp_per_stage, args.rank, args.tensor_model_parallel_size)[0] if args.non_uniform_dp_per_stage is not None else args.rank
+            num_layers_per_pipeline_stage = get_layer_num(args.non_uniform_dispatch_pp_stage, pp_rank)
+        else:
+            num_layers_per_pipeline_stage = args.num_layers // args.transformer_pipeline_model_parallel_size
+            assert args.num_layers % args.transformer_pipeline_model_parallel_size == 0, \
+                'number of layers should be divisible by the pipeline parallel size'
+            assert num_layers_per_pipeline_stage % args.num_layers_per_virtual_pipeline_stage == 0, \
+                'number of layers per pipeline stage must be divisible number of layers per virtual pipeline stage'
         args.virtual_pipeline_model_parallel_size = num_layers_per_pipeline_stage // \
             args.num_layers_per_virtual_pipeline_stage
     else:
@@ -611,10 +616,13 @@ def core_transformer_config_from_args(args, config_class=None):
     kw_args['use_pytorch_profiler'] = args.use_pytorch_profiler
     kw_args['swap_weight'] = args.swap_weight
     kw_args['llama_size'] = args.llama_size
-    kw_args['topk_k_rate'] = args.topk_k_rate
+    # kw_args['topk_k_rate'] = args.topk_k_rate
     kw_args['overlap_dequantize'] = args.overlap_dequantize
     kw_args['mobius'] = args.mobius
     kw_args['within_stage'] = args.within_stage
+    kw_args['non_uniform_dispatch_pp_stage'] = args.non_uniform_dispatch_pp_stage
+    kw_args['non_uniform_dp_per_stage'] = args.non_uniform_dp_per_stage
+    kw_args['overlap_p2p_comm'] = args.overlap_p2p_comm
     if args.swiglu:
         kw_args['activation_func'] = F.silu
         kw_args['gated_linear_unit'] = True
@@ -1208,6 +1216,11 @@ def _add_training_args(parser):
     
     group.add_argument('--llama', action='store_true', default=False,
                         help="load dataset to llama format")
+    
+    group.add_argument('--non-uniform-dispatch-pp-stage', type=str, default=None,
+                        help="Non-uniformly dispatch pp layer nums to each stage by the supplied list")
+    group.add_argument('--non-uniform-dp-per-stage', type=str, default=None,
+                        help="Non-uniformly dispatch dp layer nums to each stage by the supplied list")
 
     return parser
 
@@ -1348,8 +1361,8 @@ def _add_checkpointing_args(parser):
                         help="Set model size")
     group.add_argument('--offload-activation', action='store_true',
                         help="If set, the activation will offload to cpu memory between forward and backward propagation.")
-    group.add_argument('--topk-k-rate', type=float, default=None,
-                        help="To compress the activation")
+    # group.add_argument('--topk-k-rate', type=float, default=None,
+    #                     help="To compress the activation")
     
     return parser
 

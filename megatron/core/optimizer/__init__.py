@@ -313,13 +313,14 @@ def get_megatron_optimizer(
     moe_param_groups = list(filter(lambda g: g['is_expert_parallel'], param_groups))
 
     # Create optimizers.
-    model_parallel_rank = torch.distributed.get_rank(mpu.get_model_parallel_group())
+    group = mpu.get_model_parallel_group()[0] if mpu.get_non_uniform_model_parallelism() else mpu.get_model_parallel_group()
+    model_parallel_rank = torch.distributed.get_rank(group)
     optimizers = [
         _get_megatron_optimizer_based_on_param_groups(
             config,
             param_groups=dense_param_groups,
             per_model_buffers=per_model_buffers,
-            model_parallel_group=mpu.get_model_parallel_group(),
+            model_parallel_group=group,
             data_parallel_group=mpu.get_data_parallel_group(with_context_parallel=True),
             data_parallel_group_gloo=mpu.get_data_parallel_group_gloo(with_context_parallel=True),
             data_parallel_group_idx=model_parallel_rank,

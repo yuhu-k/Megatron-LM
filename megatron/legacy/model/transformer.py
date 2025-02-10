@@ -27,6 +27,7 @@ from megatron.core.tensor_parallel import (
 )
 from megatron.core.parallel_state import get_tensor_model_parallel_group, get_tensor_and_expert_parallel_group
 from megatron.core.jit import jit_fuser
+from megatron.my_stage_distribution import get_layer_num, get_global_layer_offset
 
 try:
     from einops import rearrange
@@ -1339,19 +1340,22 @@ def _get_num_layers(args, model_type, is_decoder=False):
                 num_layers = args.decoder_num_layers // num_ranks_in_decoder
         else:
             assert args.num_layers == args.encoder_num_layers
-            assert args.num_layers % args.transformer_pipeline_model_parallel_size == 0, \
+            assert args.non_uniform_dispatch_pp_stage != None or args.num_layers % args.transformer_pipeline_model_parallel_size == 0, \
                 'num_layers must be divisible by transformer_pipeline_model_parallel_size'
 
             # When a standalone embedding stage is used, all transformer layers
             # are divided among pipeline rank >= 1, while on pipeline rank 0,
             # ranks either contain the input embedding layer (virtual pp rank 0),
             # or no layers at all (virtual pp rank >= 1).
-            num_layers = (
-                0
-                if args.standalone_embedding_stage
-                and mpu.get_pipeline_model_parallel_rank() == 0 else
-                args.num_layers // args.transformer_pipeline_model_parallel_size
-            )
+            if args.non_uniform_dispatch_pp_stage is not None:
+                num_layers = get_layer_num(args.non_uniform_dispatch_pp_stage)
+            else:
+                num_layers = (
+                    0
+                    if args.standalone_embedding_stage
+                    and mpu.get_pipeline_model_parallel_rank() == 0 else
+                    args.num_layers // args.transformer_pipeline_model_parallel_size
+                )
     else:
         if not is_decoder:
             num_layers = args.encoder_num_layers
@@ -1562,7 +1566,10 @@ class ParallelTransformer(MegatronModule):
                     num_ranks_in_enc = args.pipeline_model_parallel_split_rank
                     offset = (pipeline_rank - num_ranks_in_enc) * self.num_layers
             else:
-                offset = mpu.get_pipeline_model_parallel_rank() * self.num_layers
+                if args.non_uniform_dispatch_pp_stage != None:
+                    offset = get_global_layer_offset(args.non_uniform_dispatch_pp_stage)
+                else:
+                    offset = mpu.get_pipeline_model_parallel_rank() * self.num_layers
 
         if self.num_layers == 0:
             # When a standalone embedding stage is used (e.g.,
